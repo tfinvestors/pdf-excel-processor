@@ -151,17 +151,20 @@ class PDFProcessor:
         # HSBC Format
         if "HSBC" in text:
             # Extract the claim number from the table cell
-            claim_match = re.search(r'Claim\s+number.*?(\d{6}/\d{2}/\d{4}/\d+)', text, re.DOTALL)
+            claim_match = re.search(r'Claim\s+number.*?(\d{6}/\d{2}/\d{4}/\d+)', text, re.DOTALL) or \
+                          re.search(r'510000/11/(\d{4}/\d+)', text, re.DOTALL)
             if claim_match:
                 data['unique_id'] = claim_match.group(1).strip()
 
             # Extract remittance amount - in HSBC format it appears in a specific format
-            amount_match = re.search(r'Remittance\s+amount\s*:?\s*(?:INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
+            amount_match = re.search(r'Remittance\s+amount\s*:?\s*(?:INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text) or \
+                           re.search(r'Amount.*?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text, re.DOTALL)
             if amount_match:
                 data['receipt_amount'] = amount_match.group(1).strip()
 
             # Extract date
-            date_match = re.search(r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text)
+            date_match = re.search(r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text) or \
+                         re.search(r'Advice\s+sending\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text)
             if date_match:
                 data['receipt_date'] = date_match.group(1).strip()
 
@@ -169,7 +172,8 @@ class PDFProcessor:
         elif "AXIS BANK" in text or "UNITED INDIA INSURANCE" in text:
             # Extract claim number - appears in a specific format
             claim_match = re.search(r'Claim#\s*.*?(\d{10}C\d{8})', text, re.DOTALL) or \
-                          re.search(r'Claim\s*.*?(\d{10}C\d{8})', text, re.DOTALL)
+                          re.search(r'Claim\s*[\s#:]*\s*(\d{10}C\d{8})', text, re.DOTALL) or \
+                          re.search(r'(\d{10}C\d{8})', text)
             if claim_match:
                 data['unique_id'] = claim_match.group(1).strip()
 
@@ -190,13 +194,6 @@ class PDFProcessor:
     def extract_data_points(self, text, expected_fields=None):
         """
         Extract required data points from text.
-
-        Args:
-            text (str): Extracted text from PDF
-            expected_fields (list): List of expected field names
-
-        Returns:
-            tuple: (unique_id, data_points_dict, table_data)
         """
         if not text:
             return None, {}, []
@@ -229,9 +226,9 @@ class PDFProcessor:
                 r'Claim\s+No\s*[:.]?\s*([A-Z0-9/_-]+)',
                 # Look for numbers in a table cell under "Claim number" column
                 r'Claim\s+number.*?\n.*?(\d{6}[/\d]+)',
-                # Try to extract the specific formats from your PDFs
-                r'510000/11/\d{4}/\d+',
-                r'5004\d{9}C\d{8}',
+                # Try to extract the specific formats from your PDFs - WITH CAPTURE GROUPS
+                r'510000/11/(\d{4}/\d+)',  # Added capture groups
+                r'(\d{10}C\d{8})',  # Added capture groups
                 # Claim numbers
                 r'Claim(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
                 r'ClaimNo\s*[:.]?\s*([A-Z0-9-_/]+)',
@@ -256,10 +253,19 @@ class PDFProcessor:
 
             # Try to find the unique identifier using patterns
             for pattern in id_patterns:
-                matches = re.search(pattern, text, re.IGNORECASE)
-                if matches:
-                    data['unique_id'] = matches.group(1).strip()
-                    break
+                try:
+                    matches = re.search(pattern, text, re.IGNORECASE)
+                    if matches and matches.group(1):  # Ensure we have a valid group match
+                        data['unique_id'] = matches.group(1).strip()
+                        # Don't match on just the word "Invoice" or other common labels
+                        if data['unique_id'].lower() in ['invoice', 'claim', 'ref', 'reference']:
+                            logger.info(f"Skipping label-only match: {data['unique_id']}")
+                            data['unique_id'] = None
+                            continue
+                        break
+                except (IndexError, AttributeError) as e:
+                    logger.warning(f"Error with pattern {pattern}: {str(e)}")
+                    continue
 
             # If no ID found through patterns, try to use NLP entities
             if not data['unique_id']:
@@ -268,8 +274,10 @@ class PDFProcessor:
                         # Check if entity contains alphanumeric characters
                         potential_id = ''.join(c for c in ent.text if c.isalnum())
                         if len(potential_id) >= 4 and any(c.isdigit() for c in potential_id):
-                            data['unique_id'] = ent.text.strip()
-                            break
+                            # Don't match on just common labels
+                            if ent.text.lower().strip() not in ['invoice', 'claim', 'ref', 'reference']:
+                                data['unique_id'] = ent.text.strip()
+                                break
 
         # Define patterns for expected data fields
         field_patterns = {
