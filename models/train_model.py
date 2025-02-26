@@ -1,0 +1,218 @@
+import os
+import pandas as pd
+import numpy as np
+import re
+import spacy
+import joblib
+import logging
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("ml_training.log")
+    ]
+)
+logger = logging.getLogger("ml_model")
+
+
+class PDFDataExtractor:
+    def __init__(self):
+        """Initialize the PDF data extractor model."""
+        self.nlp = spacy.load("en_core_web_sm")
+        self.model = None
+        self.fields = []
+
+        # Create models directory if it doesn't exist
+        os.makedirs('models', exist_ok=True)
+
+    def preprocess_text(self, text):
+        """Preprocess text for feature extraction."""
+        if not text or not isinstance(text, str):
+            return ""
+
+        # Convert to lowercase
+        text = text.lower()
+
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text)
+
+        # Remove special characters but keep alphanumeric and spaces
+        text = re.sub(r'[^\w\s]', ' ', text)
+
+        # Process with spaCy to keep only important tokens
+        doc = self.nlp(text)
+        tokens = [token.lemma_ for token in doc if not token.is_stop and not token.is_punct and token.is_alpha]
+
+        return " ".join(tokens)
+
+    def prepare_training_data(self, training_data):
+        """
+        Prepare training data for model training.
+
+        Args:
+            training_data (pd.DataFrame): DataFrame with 'text' column and target field columns
+
+        Returns:
+            tuple: (X, y) feature matrix and target matrix
+        """
+        # Store field names
+        self.fields = [col for col in training_data.columns if col != 'text']
+
+        # Preprocess text
+        X = training_data['text'].apply(self.preprocess_text)
+
+        # Prepare target matrix
+        y = training_data[self.fields].values
+
+        return X, y
+
+    def train_model(self, training_data, test_size=0.2, random_state=42):
+        """
+        Train the extraction model.
+
+        Args:
+            training_data (pd.DataFrame): DataFrame with 'text' column and target field columns
+            test_size (float): Proportion of data to use for testing
+            random_state (int): Random seed for reproducibility
+
+        Returns:
+            float: Test accuracy score
+        """
+        logger.info("Starting model training")
+
+        # Prepare data
+        X, y = self.prepare_training_data(training_data)
+
+        # Split into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+        # Create pipeline with TF-IDF and Random Forest
+        pipeline = Pipeline([
+            ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1, 2))),
+            ('classifier', MultiOutputClassifier(RandomForestClassifier(n_estimators=100, random_state=random_state)))
+        ])
+
+        # Train the model
+        logger.info("Fitting the model")
+        pipeline.fit(X_train, y_train)
+
+        # Evaluate on test set
+        y_pred = pipeline.predict(X_test)
+        accuracy = accuracy_score(y_test.flatten(), y_pred.flatten())
+
+        logger.info(f"Model training complete. Accuracy: {accuracy:.4f}")
+
+        # Print detailed report
+        for i, field in enumerate(self.fields):
+            logger.info(f"Field: {field}")
+            logger.info(classification_report(y_test[:, i], y_pred[:, i]))
+
+        # Save the model
+        self.model = pipeline
+        model_path = os.path.join('models', 'pdf_extractor_model.joblib')
+        joblib.dump(pipeline, model_path)
+        logger.info(f"Model saved to {model_path}")
+
+        return accuracy
+
+    def predict(self, texts):
+        """
+        Predict extraction fields from text.
+
+        Args:
+            texts (list): List of text strings to extract from
+
+        Returns:
+            list: List of dictionaries with extracted fields
+        """
+        if self.model is None:
+            try:
+                model_path = os.path.join('models', 'pdf_extractor_model.joblib')
+                self.model = joblib.load(model_path)
+            except:
+                logger.error("No model found. Please train the model first.")
+                return []
+
+        # Preprocess the text
+        processed_texts = [self.preprocess_text(text) for text in texts]
+
+        # Make predictions
+        predictions = self.model.predict(processed_texts)
+
+        # Convert to list of dictionaries
+        results = []
+        for i, pred in enumerate(predictions):
+            result = {}
+            for j, field in enumerate(self.fields):
+                result[field] = pred[j]
+            results.append(result)
+
+        return results
+
+
+def create_sample_training_data():
+    """
+    Create a sample training dataset structure.
+    This is just an example - you'll need to replace this with your actual training data.
+
+    Returns:
+        pd.DataFrame: Sample training data
+    """
+    # Sample data - replace this with your actual labeled data
+    data = {
+        'text': [
+            "Invoice #INV-2023-001 Date: January 15, 2023 Amount: $1,500.00 Customer: John Smith Email: john.smith@example.com",
+            "Reference ID: REF-2023-002 Transaction Date: Feb 10, 2023 Total Amount: $2,350.75 Client: Jane Doe Contact: jane.doe@example.com",
+            "Document #DOC-2023-003 Issue Date: March 5, 2023 Payment: $980.50 Name: Robert Johnson Address: 123 Main St, Anytown",
+            # Add more examples here
+        ],
+        'unique_id': ['INV-2023-001', 'REF-2023-002', 'DOC-2023-003'],
+        'date': ['January 15, 2023', 'Feb 10, 2023', 'March 5, 2023'],
+        'amount': ['$1,500.00', '$2,350.75', '$980.50'],
+        'name': ['John Smith', 'Jane Doe', 'Robert Johnson'],
+        'email': ['john.smith@example.com', 'jane.doe@example.com', '']
+    }
+
+    return pd.DataFrame(data)
+
+
+def train_model_with_sample_data():
+    """Train the model with sample data."""
+    extractor = PDFDataExtractor()
+
+    # Get sample data or load your actual labeled data
+    training_data = create_sample_training_data()
+
+    # Train the model
+    accuracy = extractor.train_model(training_data)
+
+    logger.info(f"Model trained with accuracy: {accuracy:.4f}")
+
+    return extractor
+
+
+if __name__ == "__main__":
+    # Train the model
+    extractor = train_model_with_sample_data()
+
+    # Test with a new example
+    test_text = "Invoice #INV-2023-050 Date: April 20, 2023 Amount: $1,200.00 Customer: Alice Brown Email: alice.brown@example.com"
+    predictions = extractor.predict([test_text])
+
+    # Print predictions
+    if predictions:
+        logger.info("Test Prediction:")
+        for field, value in predictions[0].items():
+            logger.info(f"{field}: {value}")
+    else:
+        logger.error("Prediction failed.")
