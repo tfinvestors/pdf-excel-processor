@@ -175,76 +175,56 @@ class ExcelHandler:
     def find_row_by_identifiers(self, unique_id, data_points, pdf_text=None):
         """
         Find a row in the DataFrame by matching either Invoice No. or Client Ref. No.
-
-        Args:
-            unique_id (str): The unique identifier from the PDF
-            data_points (dict): Extracted data points that might include invoice_no
-            pdf_text (str, optional): The full PDF text for context if needed
-
-        Returns:
-            int or None: Index of the matching row or None if not found
         """
         if not unique_id:
             return None
 
         try:
-            # Check if we have invoice_no in the extracted data
-            invoice_no = data_points.get('invoice_no', None)
+            # Log the unique_id for debugging
+            logger.info(f"Attempting to match ID: {unique_id}")
 
-            # Try to match using the invoice_no from extracted data
-            if invoice_no and self.invoice_column:
-                invoice_series = self.df[self.invoice_column].astype(str)
-                matches = invoice_series[invoice_series.str.lower() == invoice_no.lower()]
+            # Clean the unique_id to improve matching chances
+            # Remove any unwanted characters that might interfere with matching
+            cleaned_id = re.sub(r'[^A-Za-z0-9/-]', '', unique_id)
+            logger.info(f"Cleaned ID for matching: {cleaned_id}")
 
-                if not matches.empty:
-                    index = matches.index[0]
-                    logger.info(f"Found match by extracted invoice number '{invoice_no}' at row {index}")
-                    return index
+            # Extract just the numeric part if it's a complex ID
+            numeric_part = re.sub(r'[^0-9]', '', unique_id)
+            if len(numeric_part) >= 5:  # Only use if it's a substantial number
+                logger.info(f"Numeric part of ID: {numeric_part}")
+            else:
+                numeric_part = None
 
-            # Try to match using the unique_id against both columns
-            if self.invoice_column:
-                invoice_series = self.df[self.invoice_column].astype(str)
-                matches = invoice_series[invoice_series.str.lower() == unique_id.lower()]
+            # First try exact match with cleaned ID
+            for column in [self.invoice_column, self.client_ref_column]:
+                if column is not None:
+                    column_series = self.df[column].astype(str)
 
-                if not matches.empty:
-                    index = matches.index[0]
-                    logger.info(f"Found match for ID {unique_id} in invoice column at row {index}")
-                    return index
-
-            if self.client_ref_column:
-                ref_series = self.df[self.client_ref_column].astype(str)
-                matches = ref_series[ref_series.str.lower() == unique_id.lower()]
-
-                if not matches.empty:
-                    index = matches.index[0]
-                    logger.info(f"Found match for ID {unique_id} in client reference column at row {index}")
-                    return index
-
-            # Try partial matching if the ID is long enough
-            if len(unique_id) >= 5:
-                # Check Invoice column for partial matches
-                if self.invoice_column:
-                    invoice_series = self.df[self.invoice_column].astype(str)
-                    partial_matches = invoice_series[invoice_series.str.contains(unique_id, case=False, na=False)]
-
-                    if not partial_matches.empty:
-                        index = partial_matches.index[0]
-                        logger.warning(f"Found partial match for ID {unique_id} in invoice column at row {index}")
+                    # Try exact match
+                    matches = column_series[column_series.str.lower() == cleaned_id.lower()]
+                    if not matches.empty:
+                        index = matches.index[0]
+                        logger.info(f"Exact match found in column {column} at row {index}")
                         return index
 
-                # Check Client Ref column for partial matches
-                if self.client_ref_column:
-                    ref_series = self.df[self.client_ref_column].astype(str)
-                    partial_matches = ref_series[ref_series.str.contains(unique_id, case=False, na=False)]
+                    # Try contains match
+                    if len(cleaned_id) >= 5:  # Only for longer IDs to avoid false matches
+                        contains_matches = column_series[column_series.str.contains(cleaned_id, case=False, na=False)]
+                        if not contains_matches.empty:
+                            index = contains_matches.index[0]
+                            logger.info(f"Contains match found in column {column} at row {index}")
+                            return index
 
-                    if not partial_matches.empty:
-                        index = partial_matches.index[0]
-                        logger.warning(
-                            f"Found partial match for ID {unique_id} in client reference column at row {index}")
-                        return index
+                    # Try with numeric part if available
+                    if numeric_part and len(numeric_part) >= 5:
+                        numeric_matches = column_series[column_series.str.contains(numeric_part, na=False)]
+                        if not numeric_matches.empty:
+                            index = numeric_matches.index[0]
+                            logger.info(f"Numeric match found in column {column} at row {index}")
+                            return index
 
             # No match found
-            logger.warning(f"No match found for ID {unique_id}")
+            logger.warning(f"No match found for ID: {unique_id}")
             return None
 
         except Exception as e:

@@ -142,6 +142,51 @@ class PDFProcessor:
 
         return text.strip()
 
+    def extract_bank_specific_data(self, text):
+        """
+        Extract data specifically from banking documents (payment advices).
+        """
+        data = {}
+
+        # HSBC Format
+        if "HSBC" in text:
+            # Extract the claim number from the table cell
+            claim_match = re.search(r'Claim\s+number.*?(\d{6}/\d{2}/\d{4}/\d+)', text, re.DOTALL)
+            if claim_match:
+                data['unique_id'] = claim_match.group(1).strip()
+
+            # Extract remittance amount - in HSBC format it appears in a specific format
+            amount_match = re.search(r'Remittance\s+amount\s*:?\s*(?:INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
+            if amount_match:
+                data['receipt_amount'] = amount_match.group(1).strip()
+
+            # Extract date
+            date_match = re.search(r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text)
+            if date_match:
+                data['receipt_date'] = date_match.group(1).strip()
+
+        # AXIS/UNITED INDIA Format
+        elif "AXIS BANK" in text or "UNITED INDIA INSURANCE" in text:
+            # Extract claim number - appears in a specific format
+            claim_match = re.search(r'Claim#\s*.*?(\d{10}C\d{8})', text, re.DOTALL) or \
+                          re.search(r'Claim\s*.*?(\d{10}C\d{8})', text, re.DOTALL)
+            if claim_match:
+                data['unique_id'] = claim_match.group(1).strip()
+
+            # Extract amount
+            amount_match = re.search(r'Amount\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text) or \
+                           re.search(r'(?:INR|Rs\.?)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
+            if amount_match:
+                data['receipt_amount'] = amount_match.group(1).strip()
+
+            # Extract date
+            date_match = re.search(r'Payment\s+Ini\s+Date\s*:?\s*(\d{2}-\d{2}-\d{4})', text) or \
+                         re.search(r'Date\s*:?\s*(\d{2}-\d{2}-\d{4})', text)
+            if date_match:
+                data['receipt_date'] = date_match.group(1).strip()
+
+        return data
+
     def extract_data_points(self, text, expected_fields=None):
         """
         Extract required data points from text.
@@ -165,46 +210,66 @@ class PDFProcessor:
             'data_points': {}
         }
 
-        # Define patterns for unique identifier (based on sample PDFs)
-        id_patterns = [
-            # Claim numbers
-            r'Claim(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
-            r'ClaimNo\s*[:.]?\s*([A-Z0-9-_/]+)',
-            r'Sub\s+Claim\s+No.*?[:]\s*([A-Z0-9-_/]+)',
-            r'CLAIM_REF_NO\s*([A-Z0-9-_/]+)',
-            # Invoice/reference numbers
-            r'(?:Invoice|Ref|Reference)(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
-            r'(?:Our|Your)\s+Ref\s*[:.]?\s*([A-Z0-9-_/]+)',
-            r'Msg\s+Ref\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
-            # Policy numbers
-            r'Policy(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
-            r'PolicyNo\s*[:.]?\s*([A-Z0-9-_/]+)',
-            # Bank reference numbers
-            r'Bank\s+Reference\s*[:]\s*([A-Z0-9-_/]+)',
-            r'Bank\s+Ref\s+No\s*[:]\s*([A-Z0-9-_/]+)',
-            r'UTR\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
-            r'UETR\s*[:]\s*([A-Z0-9-_/]+)',
-            # Settlement references
-            r'SETTLEMENT\s+REFERENCE\s*[:]\s*([A-Z0-9-_/]+)',
-            r'(?:Settlement|Clearing)\s+(?:document|No|Reference)\s*[:.]?\s*([A-Z0-9-_/]+)',
-        ]
+        # Bank-specific extraction first (more precise)
+        bank_data = self.extract_bank_specific_data(text)
+        if bank_data and 'unique_id' in bank_data:
+            data['unique_id'] = bank_data['unique_id']
+            # Add other extracted data
+            for key, value in bank_data.items():
+                if key != 'unique_id':
+                    data['data_points'][key] = value
 
-        # Try to find the unique identifier using patterns
-        for pattern in id_patterns:
-            matches = re.search(pattern, text, re.IGNORECASE)
-            if matches:
-                data['unique_id'] = matches.group(1).strip()
-                break
-
-        # If no ID found through patterns, try to use NLP entities
+        # If bank-specific extraction didn't work, try generic patterns
         if not data['unique_id']:
-            for ent in doc.ents:
-                if ent.label_ in ['ORG', 'PRODUCT', 'GPE', 'NORP', 'CARDINAL']:
-                    # Check if entity contains alphanumeric characters
-                    potential_id = ''.join(c for c in ent.text if c.isalnum())
-                    if len(potential_id) >= 4 and any(c.isdigit() for c in potential_id):
-                        data['unique_id'] = ent.text.strip()
-                        break
+            # Define patterns for unique identifier (based on sample PDFs)
+            id_patterns = [
+                # Claim numbers with specific patterns for your documents
+                r'Claim\s+number.*?:\s*([A-Z0-9/-]+)',
+                r'Claim#\s*[:.]?\s*([A-Z0-9/_-]+)',
+                r'Claim\s+No\s*[:.]?\s*([A-Z0-9/_-]+)',
+                # Look for numbers in a table cell under "Claim number" column
+                r'Claim\s+number.*?\n.*?(\d{6}[/\d]+)',
+                # Try to extract the specific formats from your PDFs
+                r'510000/11/\d{4}/\d+',
+                r'5004\d{9}C\d{8}',
+                # Claim numbers
+                r'Claim(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+                r'ClaimNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+                r'Sub\s+Claim\s+No.*?[:]\s*([A-Z0-9-_/]+)',
+                r'CLAIM_REF_NO\s*([A-Z0-9-_/]+)',
+                # Invoice/reference numbers
+                r'(?:Invoice|Ref|Reference)(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+                r'(?:Our|Your)\s+Ref\s*[:.]?\s*([A-Z0-9-_/]+)',
+                r'Msg\s+Ref\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
+                # Policy numbers
+                r'Policy(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+                r'PolicyNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+                # Bank reference numbers
+                r'Bank\s+Reference\s*[:]\s*([A-Z0-9-_/]+)',
+                r'Bank\s+Ref\s+No\s*[:]\s*([A-Z0-9-_/]+)',
+                r'UTR\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
+                r'UETR\s*[:]\s*([A-Z0-9-_/]+)',
+                # Settlement references
+                r'SETTLEMENT\s+REFERENCE\s*[:]\s*([A-Z0-9-_/]+)',
+                r'(?:Settlement|Clearing)\s+(?:document|No|Reference)\s*[:.]?\s*([A-Z0-9-_/]+)',
+            ]
+
+            # Try to find the unique identifier using patterns
+            for pattern in id_patterns:
+                matches = re.search(pattern, text, re.IGNORECASE)
+                if matches:
+                    data['unique_id'] = matches.group(1).strip()
+                    break
+
+            # If no ID found through patterns, try to use NLP entities
+            if not data['unique_id']:
+                for ent in doc.ents:
+                    if ent.label_ in ['ORG', 'PRODUCT', 'GPE', 'NORP', 'CARDINAL']:
+                        # Check if entity contains alphanumeric characters
+                        potential_id = ''.join(c for c in ent.text if c.isalnum())
+                        if len(potential_id) >= 4 and any(c.isdigit() for c in potential_id):
+                            data['unique_id'] = ent.text.strip()
+                            break
 
         # Define patterns for expected data fields
         field_patterns = {

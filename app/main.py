@@ -87,8 +87,16 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     results['files']['unprocessed'].append(pdf_file)
                     continue
 
+                # Log first 500 chars of extracted text for debugging
+                logger.debug(f"Extracted text sample: {extracted_text[:500]}")
+
                 # Extract data points and potential table data
                 unique_id, data_points, table_data = pdf_processor.extract_data_points(extracted_text)
+
+                # Log extracted data
+                logger.info(f"Extracted unique ID: {unique_id}")
+                logger.info(f"Extracted data points: {data_points}")
+                logger.info(f"Found {len(table_data)} table rows")
 
                 # Case 1: The PDF contains a table with multiple rows of data
                 if table_data and len(table_data) > 0:
