@@ -165,16 +165,28 @@ class PDFProcessor:
             'data_points': {}
         }
 
-        # Define patterns for unique identifier
-        # Update these patterns based on your specific data format
+        # Define patterns for unique identifier (based on sample PDFs)
         id_patterns = [
-            r'ID[:\s]*([A-Z0-9-]+)',
-            r'Identifier[:\s]*([A-Z0-9-]+)',
-            r'Reference[:\s]*([A-Z0-9-]+)',
-            r'Document\s*ID[:\s]*([A-Z0-9-]+)',
-            r'Invoice\s*Number[:\s]*([A-Z0-9-]+)',
-            r'Case\s*Number[:\s]*([A-Z0-9-]+)',
-            # Add more patterns as needed for your use case
+            # Claim numbers
+            r'Claim(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+            r'ClaimNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+            r'Sub\s+Claim\s+No.*?[:]\s*([A-Z0-9-_/]+)',
+            r'CLAIM_REF_NO\s*([A-Z0-9-_/]+)',
+            # Invoice/reference numbers
+            r'(?:Invoice|Ref|Reference)(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+            r'(?:Our|Your)\s+Ref\s*[:.]?\s*([A-Z0-9-_/]+)',
+            r'Msg\s+Ref\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
+            # Policy numbers
+            r'Policy(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
+            r'PolicyNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+            # Bank reference numbers
+            r'Bank\s+Reference\s*[:]\s*([A-Z0-9-_/]+)',
+            r'Bank\s+Ref\s+No\s*[:]\s*([A-Z0-9-_/]+)',
+            r'UTR\s+Number\s*[:]\s*([A-Z0-9-_/]+)',
+            r'UETR\s*[:]\s*([A-Z0-9-_/]+)',
+            # Settlement references
+            r'SETTLEMENT\s+REFERENCE\s*[:]\s*([A-Z0-9-_/]+)',
+            r'(?:Settlement|Clearing)\s+(?:document|No|Reference)\s*[:.]?\s*([A-Z0-9-_/]+)',
         ]
 
         # Try to find the unique identifier using patterns
@@ -184,10 +196,10 @@ class PDFProcessor:
                 data['unique_id'] = matches.group(1).strip()
                 break
 
-        # If no ID found, try to use NLP entities
+        # If no ID found through patterns, try to use NLP entities
         if not data['unique_id']:
             for ent in doc.ents:
-                if ent.label_ in ['ORG', 'PRODUCT', 'GPE', 'NORP']:
+                if ent.label_ in ['ORG', 'PRODUCT', 'GPE', 'NORP', 'CARDINAL']:
                     # Check if entity contains alphanumeric characters
                     potential_id = ''.join(c for c in ent.text if c.isalnum())
                     if len(potential_id) >= 4 and any(c.isdigit() for c in potential_id):
@@ -195,27 +207,61 @@ class PDFProcessor:
                         break
 
         # Define patterns for expected data fields
-        # Customize these patterns based on the expected data in your PDFs
         field_patterns = {
-            'date': r'Date[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+[A-Za-z]+\s+\d{2,4})',
-            'amount': r'Amount[:\s]*[\$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
-            'name': r'Name[:\s]*([A-Za-z\s]+)',
-            'address': r'Address[:\s]*([A-Za-z0-9\s,]+)',
-            'contact': r'(?:Contact|Phone|Tel)[:\s]*(\+?[\d\-\(\)\s]{7,})',
-            'email': r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            # Add more fields as needed
+            # Amount fields
+            'receipt_amount': [
+                r'(?:Receipt|Payment|Remittance)\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'Gross\s+Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'[Nn]et\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'(?:Rs\.?|INR)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?!\s*%)',  # Amount with currency symbol
+            ],
+
+            # Date fields
+            'receipt_date': [
+                r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+                r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+                r'[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+                r'[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+                r'Value\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
+                r'Advice\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
+                r'(?:Document|Bill)\s+(?:No\.|Date).*?(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+            ],
+
+            # TDS fields
+            'tds': [
+                r'TDS\s+(?:Amount)?\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'(?:Less|Deduction)[:\s]*TDS\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'TDS\s*[:-]?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ],
+
+            # Additional fields that might be useful
+            'invoice_no': [
+                r'Invoice\s+(?:No\.|Number)\s*[:.]?\s*([A-Z0-9-_/]+)',
+                r'Bill\s+No\.\s*[:.]?\s*([A-Z0-9-_/]+)',
+                r'InvoiceNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+            ],
+
+            'policy_no': [
+                r'Policy\s+(?:No\.|Number)\s*[:.]?\s*([A-Z0-9-_/]+)',
+                r'PolicyNo\s*[:.]?\s*([A-Z0-9-_/]+)',
+            ],
+
+            'company_name': [
+                r'(?:Company|Bank|Beneficiary)\s+Name\s*[:.]?\s*([A-Za-z\s]+(?:\s+Ltd\.?)?)',
+                r'REMITTER\s+NAME\s*[:.]?\s*([A-Za-z\s]+(?:\s+Ltd\.?)?)',
+                r'From\s*[:.]?\s*([A-Za-z\s]+(?:\s+INSURANCE)?(?:\s+Ltd\.?)?)',
+            ],
         }
 
         # Extract data points using patterns
-        for field, pattern in field_patterns.items():
-            matches = re.search(pattern, text, re.IGNORECASE)
-            if matches:
-                data['data_points'][field] = matches.group(1).strip()
-
-        # Check for email addresses specifically
-        email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
-        if email_matches:
-            data['data_points']['email'] = email_matches[0]
+        for field, pattern_list in field_patterns.items():
+            for pattern in pattern_list:
+                matches = re.search(pattern, text, re.IGNORECASE)
+                if matches:
+                    value = matches.group(1).strip()
+                    data['data_points'][field] = value
+                    break  # Use the first successful pattern match for each field
 
         # Use ML model to enhance extraction (if available)
         if self.ml_model and self.use_ml:
@@ -229,6 +275,42 @@ class PDFProcessor:
                         data['data_points'][field] = ml_enhanced_data[field]
             except Exception as e:
                 logger.error(f"Error using ML model: {str(e)}")
+
+        # Compute TDS if not found or empty
+        if 'receipt_amount' in data['data_points'] and (
+                'tds' not in data['data_points'] or not data['data_points']['tds']):
+            amount_str = data['data_points']['receipt_amount']
+            try:
+                # Remove currency symbols and commas
+                amount = float(re.sub(r'[^\d.]', '', amount_str))
+
+                # Check if any of the insurance companies are mentioned in the text
+                insurance_companies = [
+                    "national insurance company limited",
+                    "united india insurance company limited",
+                    "the new india assurance co. ltd",
+                    "oriental insurance co ltd"
+                ]
+
+                contains_insurance_company = any(company.lower() in text.lower() for company in insurance_companies)
+
+                # Apply the appropriate calculation based on company presence
+                if contains_insurance_company:
+                    tds = round(amount * 0.11111111, 2)
+                else:
+                    tds = round(amount * 0.09259259, 2)
+
+                data['data_points']['tds'] = str(tds)
+                data['data_points']['tds_computed'] = 'Yes'
+                logger.info(
+                    f"TDS computed: {tds} (Insurance company {'found' if contains_insurance_company else 'not found'})")
+            except Exception as e:
+                logger.error(f"Error computing TDS: {str(e)}")
+        else:
+            # If TDS was found in the document, mark it as not computed
+            if 'tds' in data['data_points'] and data['data_points']['tds']:
+                data['data_points']['tds_computed'] = 'No'
+                logger.info(f"TDS extracted from document: {data['data_points']['tds']}")
 
         return data['unique_id'], data['data_points']
 
