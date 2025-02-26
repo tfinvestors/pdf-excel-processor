@@ -75,8 +75,50 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
 
             try:
                 # Extract data from PDF
-                unique_id, data_points = pdf_processor.process_pdf(pdf_path)
+                extracted_text = pdf_processor.extract_text(pdf_path)
 
+                if not extracted_text:
+                    if status_callback:
+                        status_callback(f"❌ Failed to extract text from {pdf_file}")
+
+                    # Move to unprocessed folder
+                    shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                    results['unprocessed'] += 1
+                    results['files']['unprocessed'].append(pdf_file)
+                    continue
+
+                # Extract data points and potential table data
+                unique_id, data_points, table_data = pdf_processor.extract_data_points(extracted_text)
+
+                # Case 1: The PDF contains a table with multiple rows of data
+                if table_data and len(table_data) > 0:
+                    if status_callback:
+                        status_callback(f"📊 Found table with {len(table_data)} rows in {pdf_file}")
+
+                    # Process the table data
+                    table_results = excel_handler.process_multi_row_data(table_data, extracted_text)
+
+                    if table_results['processed'] > 0:
+                        if status_callback:
+                            status_callback(
+                                f"✅ Successfully processed {table_results['processed']} of {table_results['total']} rows from {pdf_file}")
+
+                        # Move to processed folder
+                        shutil.copy2(pdf_path, os.path.join(processed_dir, pdf_file))
+                        results['processed'] += 1
+                        results['files']['processed'].append(pdf_file)
+                    else:
+                        if status_callback:
+                            status_callback(f"❌ Failed to process any rows from {pdf_file}")
+
+                        # Move to unprocessed folder
+                        shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                        results['unprocessed'] += 1
+                        results['files']['unprocessed'].append(pdf_file)
+
+                    continue  # Skip the single row processing since we've processed the table
+
+                # Case 2: The PDF contains a single row of data (standard case)
                 if not unique_id:
                     if status_callback:
                         status_callback(f"❌ Failed to extract ID from {pdf_file}")
@@ -88,7 +130,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     continue
 
                 # Find corresponding row in Excel
-                row_index = excel_handler.find_row_by_id(unique_id)
+                row_index = excel_handler.find_row_by_identifiers(unique_id, data_points, extracted_text)
 
                 if row_index is None:
                     if status_callback:
@@ -101,9 +143,10 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     continue
 
                 # Update Excel row with extracted data
-                success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points)
+                success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
+                                                                                            extracted_text)
 
-                if success and len(failed_fields) == 0:
+                if success:
                     if status_callback:
                         status_callback(
                             f"✅ Successfully updated row for ID: {unique_id} with fields: {', '.join(updated_fields)}")

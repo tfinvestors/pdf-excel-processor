@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import openpyxl
 import logging
+import re
 from openpyxl.styles import PatternFill, Font
 from datetime import datetime
 
@@ -29,7 +30,8 @@ class ExcelHandler:
         self.df = None
         self.wb = None
         self.ws = None
-        self.id_column = None
+        self.invoice_column = None
+        self.client_ref_column = None
         self.header_mapping = {}
 
         # Load the Excel file
@@ -46,8 +48,8 @@ class ExcelHandler:
             self.wb = openpyxl.load_workbook(self.excel_path)
             self.ws = self.wb.active
 
-            # Try to identify the ID column automatically
-            self.identify_id_column()
+            # Identify the ID columns (Invoice No. and Client Ref. No.)
+            self.identify_id_columns()
 
             # Create header mapping
             self.create_header_mapping()
@@ -56,100 +58,190 @@ class ExcelHandler:
             logger.error(f"Error loading Excel file: {str(e)}")
             raise
 
-    def identify_id_column(self):
-        """Try to identify the column containing unique identifiers."""
-        potential_id_columns = [
-            'ID', 'Id', 'id', 'identifier', 'Identifier',
-            'reference', 'Reference', 'ref', 'Ref',
-            'doc_id', 'Doc_ID', 'Document ID', 'document id',
-            'invoice', 'Invoice', 'Invoice Number', 'invoice number',
-            'case', 'Case', 'Case Number', 'case number'
+    def identify_id_columns(self):
+        """Identify the columns for Invoice No. and Client Ref. No."""
+        # Search for Invoice Number column
+        invoice_columns = [
+            'Invoice No.', 'Invoice No', 'Invoice Number', 'Invoice',
+            'Inv No.', 'Inv No', 'Inv Number', 'Invoice #', 'Bill No.',
+            'Bill No', 'Payment Details 5', 'ThirdPartyInv', 'ILA_REF_NO',
+            'Expense Paid', 'Invoice'
         ]
 
-        # Check for exact matches in column names
-        for col in potential_id_columns:
+        # Search for Client Reference Number column
+        client_ref_columns = [
+            'Client Ref. No.', 'Client Ref. No', 'Client Reference Number',
+            'Client Ref', 'Ref. No.', 'Reference No.', 'Reference Number', 'Claim#', 'Claim Number', 'CLAIM NUMBER',
+            'Claim number', 'Sub Claim No', 'INV REF:Claim No', 'Claim No', 'DESC', 'Payment Details 7',
+            'ClaimNo', 'Claim_Ref_No', 'CLAIM_REF_NO', 'Invoice Details'
+        ]
+
+        # Find exact matches first
+        for col in invoice_columns:
             if col in self.df.columns:
-                self.id_column = col
-                logger.info(f"Found ID column: {col}")
-                return
+                self.invoice_column = col
+                logger.info(f"Found Invoice column: {col}")
+                break
 
-        # If no exact match, check for partial matches
-        for col in self.df.columns:
-            for id_col in potential_id_columns:
-                if id_col.lower() in col.lower():
-                    self.id_column = col
-                    logger.info(f"Found ID column (partial match): {col}")
-                    return
+        for col in client_ref_columns:
+            if col in self.df.columns:
+                self.client_ref_column = col
+                logger.info(f"Found Client Reference column: {col}")
+                break
 
-        # If still not found, use the first column as a fallback
-        self.id_column = self.df.columns[0]
-        logger.warning(f"No obvious ID column found. Using first column: {self.id_column}")
+        # If exact matches not found, look for partial matches
+        if not self.invoice_column:
+            for col in self.df.columns:
+                if any(invoice.lower() in col.lower() for invoice in invoice_columns):
+                    self.invoice_column = col
+                    logger.info(f"Found Invoice column (partial match): {col}")
+                    break
+
+        if not self.client_ref_column:
+            for col in self.df.columns:
+                if any(ref.lower() in col.lower() for ref in client_ref_columns):
+                    self.client_ref_column = col
+                    logger.info(f"Found Client Reference column (partial match): {col}")
+                    break
+
+        # If still not found, use the first two columns as fallback
+        if not self.invoice_column and len(self.df.columns) > 0:
+            self.invoice_column = self.df.columns[0]
+            logger.warning(f"No obvious Invoice column found. Using first column: {self.invoice_column}")
+
+        if not self.client_ref_column and len(self.df.columns) > 1:
+            self.client_ref_column = self.df.columns[1]
+            logger.warning(f"No obvious Client Reference column found. Using second column: {self.client_ref_column}")
 
     def create_header_mapping(self):
         """Create a mapping between common field names and actual column names."""
         # Define common field names and possible variants
         field_mappings = {
-            'date': ['date', 'dt', 'day', 'invoice date', 'transaction date', 'document date'],
-            'amount': ['amount', 'amt', 'value', 'price', 'cost', 'total', 'sum', 'invoice amount'],
-            'name': ['name', 'customer name', 'client name', 'full name', 'person', 'contact name'],
-            'address': ['address', 'addr', 'location', 'customer address', 'client address'],
-            'contact': ['contact', 'phone', 'telephone', 'tel', 'mobile', 'cell', 'contact number'],
-            'email': ['email', 'mail', 'e-mail', 'email address', 'contact email']
-            # Add more mappings as needed
+            'receipt_date': ['Receipt Date', 'Receipt Date', 'Payment Date', 'Value Date', 'Date', 'Payment Ini Date',
+                             'Value date', 'Advice sending date', 'Settlement Date', 'Value Date', 'VALUE DATE'],
+            'receipt_amount': ['Receipt Amount', 'Receipt Amt', 'Payment Amount', 'Amount', 'Value', 'Amount',
+                               'Remittance amount', 'Net Paid Amount', 'REMITTANCE AMOUNT', 'Net Amount',
+                               'Amount (INR)', 'AMOUNT', 'Payment amount', 'TRF AMOUNT'],
+            'tds': ['TDS', 'TDS Amount', 'Tax Deducted at Source', 'Tax Amount', 'TDS Amount', 'TDS', 'TDS Amt',
+                    'Payment Details 4', 'Less : TDS'],
+            'tds_computed': ['TDS Computed?', 'TDS Computed', 'Is TDS Computed', 'Computed TDS']
         }
 
         # Create mapping between standardized field names and actual column names
         for field, variants in field_mappings.items():
             for col in self.df.columns:
-                if any(variant.lower() in col.lower() for variant in variants):
+                if col in variants or any(variant.lower() in col.lower() for variant in variants):
                     self.header_mapping[field] = col
                     break
 
         logger.info(f"Created header mapping: {self.header_mapping}")
 
-    def find_row_by_id(self, unique_id):
+    def compute_tds(self, amount, text):
         """
-        Find a row in the DataFrame by its unique identifier.
+        Compute TDS based on the receipt amount and text content.
 
         Args:
-            unique_id (str): The unique identifier to search for
+            amount (float): The receipt amount
+            text (str): The text content from the PDF
+
+        Returns:
+            tuple: (tds_value, is_computed)
+        """
+        try:
+            # Check if any of the insurance companies are mentioned in the text
+            insurance_companies = [
+                "national insurance company limited",
+                "united india insurance company limited",
+                "the new india assurance co. ltd",
+                "oriental insurance co ltd"
+            ]
+
+            contains_insurance_company = any(company.lower() in text.lower() for company in insurance_companies)
+
+            # Apply the appropriate calculation based on company presence
+            if contains_insurance_company:
+                tds = round(amount * 0.11111111, 2)
+                logger.info(f"TDS computed for insurance company: {tds} (11.111111% of {amount})")
+            else:
+                tds = round(amount * 0.09259259, 2)
+                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
+
+            return tds, True
+
+        except Exception as e:
+            logger.error(f"Error computing TDS: {str(e)}")
+            return 0.0, True
+
+    def find_row_by_identifiers(self, unique_id, data_points, pdf_text=None):
+        """
+        Find a row in the DataFrame by matching either Invoice No. or Client Ref. No.
+
+        Args:
+            unique_id (str): The unique identifier from the PDF
+            data_points (dict): Extracted data points that might include invoice_no
+            pdf_text (str, optional): The full PDF text for context if needed
 
         Returns:
             int or None: Index of the matching row or None if not found
         """
-        if not unique_id or self.id_column is None:
+        if not unique_id:
             return None
 
         try:
-            # Convert ID column and search value to string for matching
-            id_series = self.df[self.id_column].astype(str)
-            unique_id_str = str(unique_id)
+            # Check if we have invoice_no in the extracted data
+            invoice_no = data_points.get('invoice_no', None)
 
-            # Try exact match first
-            matches = id_series[id_series == unique_id_str]
+            # Try to match using the invoice_no from extracted data
+            if invoice_no and self.invoice_column:
+                invoice_series = self.df[self.invoice_column].astype(str)
+                matches = invoice_series[invoice_series.str.lower() == invoice_no.lower()]
 
-            if not matches.empty:
-                index = matches.index[0]
-                logger.info(f"Found exact match for ID {unique_id} at row {index}")
-                return index
-
-            # If no exact match, try case-insensitive match
-            matches = id_series[id_series.str.lower() == unique_id_str.lower()]
-
-            if not matches.empty:
-                index = matches.index[0]
-                logger.info(f"Found case-insensitive match for ID {unique_id} at row {index}")
-                return index
-
-            # If still no match, try partial match (if ID is long enough)
-            if len(unique_id_str) >= 5:
-                # Check if the ID column contains the search value
-                partial_matches = id_series[id_series.str.contains(unique_id_str, case=False, na=False)]
-
-                if not partial_matches.empty:
-                    index = partial_matches.index[0]
-                    logger.warning(f"Found partial match for ID {unique_id} at row {index}")
+                if not matches.empty:
+                    index = matches.index[0]
+                    logger.info(f"Found match by extracted invoice number '{invoice_no}' at row {index}")
                     return index
+
+            # Try to match using the unique_id against both columns
+            if self.invoice_column:
+                invoice_series = self.df[self.invoice_column].astype(str)
+                matches = invoice_series[invoice_series.str.lower() == unique_id.lower()]
+
+                if not matches.empty:
+                    index = matches.index[0]
+                    logger.info(f"Found match for ID {unique_id} in invoice column at row {index}")
+                    return index
+
+            if self.client_ref_column:
+                ref_series = self.df[self.client_ref_column].astype(str)
+                matches = ref_series[ref_series.str.lower() == unique_id.lower()]
+
+                if not matches.empty:
+                    index = matches.index[0]
+                    logger.info(f"Found match for ID {unique_id} in client reference column at row {index}")
+                    return index
+
+            # Try partial matching if the ID is long enough
+            if len(unique_id) >= 5:
+                # Check Invoice column for partial matches
+                if self.invoice_column:
+                    invoice_series = self.df[self.invoice_column].astype(str)
+                    partial_matches = invoice_series[invoice_series.str.contains(unique_id, case=False, na=False)]
+
+                    if not partial_matches.empty:
+                        index = partial_matches.index[0]
+                        logger.warning(f"Found partial match for ID {unique_id} in invoice column at row {index}")
+                        return index
+
+                # Check Client Ref column for partial matches
+                if self.client_ref_column:
+                    ref_series = self.df[self.client_ref_column].astype(str)
+                    partial_matches = ref_series[ref_series.str.contains(unique_id, case=False, na=False)]
+
+                    if not partial_matches.empty:
+                        index = partial_matches.index[0]
+                        logger.warning(
+                            f"Found partial match for ID {unique_id} in client reference column at row {index}")
+                        return index
 
             # No match found
             logger.warning(f"No match found for ID {unique_id}")
@@ -159,13 +251,14 @@ class ExcelHandler:
             logger.error(f"Error finding row by ID: {str(e)}")
             return None
 
-    def update_row_with_data(self, row_index, data_points):
+    def update_row_with_data(self, row_index, data_points, pdf_text=None):
         """
         Update a row in the Excel file with extracted data points.
 
         Args:
             row_index (int): Index of the row to update
             data_points (dict): Dictionary of field names and values
+            pdf_text (str, optional): The full PDF text for context if needed
 
         Returns:
             tuple: (success, updated_fields, failed_fields)
@@ -180,11 +273,32 @@ class ExcelHandler:
             # Get the Excel row number (add 2 to account for 0-indexing and header row)
             excel_row = row_index + 2
 
+            # Process and compute TDS if needed
+            if 'receipt_amount' in data_points and data_points['receipt_amount'] and 'tds' not in data_points:
+                try:
+                    # Clean the amount value and convert to float
+                    amount_str = data_points['receipt_amount']
+                    amount = float(re.sub(r'[^\d.]', '', amount_str))
+
+                    # Compute TDS
+                    tds_value, is_computed = self.compute_tds(amount, pdf_text if pdf_text else "")
+
+                    # Add to data_points
+                    data_points['tds'] = str(tds_value)
+                    data_points['tds_computed'] = 'Yes'
+                    logger.info(f"TDS computed: {tds_value}")
+                except Exception as e:
+                    logger.error(f"Error computing TDS: {str(e)}")
+            elif 'tds' in data_points and data_points['tds']:
+                # If TDS is already in data_points, mark it as not computed
+                data_points['tds_computed'] = 'No'
+                logger.info(f"Using extracted TDS: {data_points['tds']}")
+
             # Track which fields were successfully updated
-            for field, value in data_points.items():
-                if field in self.header_mapping and value:
-                    column_name = self.header_mapping[field]
-                    column_index = self.df.columns.get_loc(column_name) + 1  # 1-indexed for openpyxl
+            for field, mapped_column in self.header_mapping.items():
+                if field in data_points and data_points[field]:
+                    value = data_points[field]
+                    column_index = self.df.columns.get_loc(mapped_column) + 1  # 1-indexed for openpyxl
 
                     # Update the cell value
                     cell = self.ws.cell(row=excel_row, column=column_index)
@@ -195,40 +309,119 @@ class ExcelHandler:
                     cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
                     # Log the update
-                    logger.info(f"Updated row {row_index}, column '{column_name}': '{original_value}' -> '{value}'")
+                    logger.info(f"Updated row {row_index}, column '{mapped_column}': '{original_value}' -> '{value}'")
                     updated_fields.append(field)
                 else:
-                    if field not in self.header_mapping:
-                        logger.warning(f"Field '{field}' not found in header mapping")
+                    if field not in data_points:
+                        logger.warning(f"Field '{field}' not found in extracted data")
                     else:
                         logger.warning(f"No value provided for field '{field}'")
-                    failed_fields.append(field)
+
+                    # Don't count TDS Computed as a failed field if it wasn't provided
+                    if field != 'tds_computed':
+                        failed_fields.append(field)
+
+            # Special handling for TDS Computed field
+            tds_computed_column = self.header_mapping.get('tds_computed')
+            if tds_computed_column and 'tds' in data_points:
+                tds_computed_value = data_points.get('tds_computed', 'No')  # Default to No if not provided
+                tds_computed_index = self.df.columns.get_loc(tds_computed_column) + 1
+                tds_computed_cell = self.ws.cell(row=excel_row, column=tds_computed_index)
+                tds_computed_cell.value = tds_computed_value
+                tds_computed_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                logger.info(f"Updated TDS Computed status: {tds_computed_value}")
+
+                if 'tds_computed' not in updated_fields:
+                    updated_fields.append('tds_computed')
 
             # Add timestamp to indicate when the record was updated
-            if 'last_updated' in self.df.columns:
-                update_col = self.df.columns.get_loc('last_updated') + 1
-                self.ws.cell(row=excel_row, column=update_col).value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            last_column = len(self.df.columns) + 1
+            timestamp_cell = self.ws.cell(row=excel_row, column=last_column)
+            timestamp_cell.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Save the updated workbook
-            success = len(updated_fields) > 0
-            if success:
+            # Success if at least one of receipt_amount, receipt_date, or tds was updated
+            core_fields = ['receipt_amount', 'receipt_date', 'tds']
+            core_fields_updated = any(field in updated_fields for field in core_fields)
+
+            if core_fields_updated:
+                # Save the updated workbook
                 backup_path = self.excel_path.replace('.xlsx',
                                                       f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
                 self.wb.save(backup_path)  # Save a backup first
                 self.wb.save(self.excel_path)  # Then save the actual file
                 logger.info(f"Saved updated Excel file and backup: {backup_path}")
-
-            return success, updated_fields, failed_fields
+                return True, updated_fields, failed_fields
+            else:
+                logger.warning(f"No core fields (receipt_amount, receipt_date, tds) were updated for row {row_index}")
+                return False, updated_fields, failed_fields
 
         except Exception as e:
             logger.error(f"Error updating row {row_index}: {str(e)}")
             return False, [], list(data_points.keys())
 
+    def process_multi_row_data(self, table_data, pdf_text):
+        """
+        Process data from a table in the PDF where each row might correspond to a different Excel row.
+
+        Args:
+            table_data (list): List of dictionaries, each containing data for one row
+            pdf_text (str): The full PDF text for context and TDS computation
+
+        Returns:
+            dict: Processing results
+        """
+        results = {
+            'processed': 0,
+            'unprocessed': 0,
+            'total': len(table_data)
+        }
+
+        for row_data in table_data:
+            # The row_data should contain at least one identifier (invoice_no or client_ref)
+            # and at least one value to update (receipt_amount, receipt_date, or tds)
+
+            # Try to find the corresponding row in Excel
+            unique_id = row_data.get('unique_id', None)
+            if not unique_id:
+                # Try to find a suitable unique ID from other fields
+                if 'invoice_no' in row_data:
+                    unique_id = row_data['invoice_no']
+                elif 'client_ref' in row_data:
+                    unique_id = row_data['client_ref']
+
+            if not unique_id:
+                logger.warning(f"No unique identifier found for row data: {row_data}")
+                results['unprocessed'] += 1
+                continue
+
+            # Find the row in Excel
+            row_index = self.find_row_by_identifiers(unique_id, row_data, pdf_text)
+
+            if row_index is None:
+                logger.warning(f"No matching Excel row found for ID: {unique_id}")
+                results['unprocessed'] += 1
+                continue
+
+            # Update the row with data
+            success, updated_fields, failed_fields = self.update_row_with_data(row_index, row_data, pdf_text)
+
+            if success:
+                results['processed'] += 1
+                logger.info(f"Successfully updated row for ID: {unique_id}")
+            else:
+                results['unprocessed'] += 1
+                logger.warning(f"Failed to update row for ID: {unique_id}")
+
+        return results
+
     def save_excel(self):
         """Save the Excel workbook."""
         try:
+            backup_path = self.excel_path.replace('.xlsx',
+                                                  f'_backup_final_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
+            self.wb.save(backup_path)
             self.wb.save(self.excel_path)
-            logger.info(f"Excel file saved: {self.excel_path}")
+            logger.info(f"Excel file saved: {self.excel_path} with backup: {backup_path}")
             return True
         except Exception as e:
             logger.error(f"Error saving Excel file: {str(e)}")
