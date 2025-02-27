@@ -18,15 +18,19 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
-def process_files(excel_path, pdf_folder, progress_callback=None, status_callback=None):
+# In app/main.py - Update the process_files function
+
+def process_files(excel_path, pdf_folder, progress_callback=None, status_callback=None, debug_mode=False):
     """
     Process PDF files and update Excel with extracted data.
+    Enhanced with improved logging and debugging capabilities.
 
     Args:
         excel_path (str): Path to the Excel file
         pdf_folder (str): Path to the folder containing PDF files
         progress_callback (function): Function to update progress (current, total)
         status_callback (function): Function to update status messages
+        debug_mode (bool): Enable debug mode for visualizations and extra logging
 
     Returns:
         dict: Processing results summary
@@ -46,12 +50,20 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
     processed_dir = os.path.join(download_dir, "Processed PDF")
     unprocessed_dir = os.path.join(download_dir, "Unprocessed PDF")
 
+    # Create debug directory if debug mode is enabled
+    debug_dir = None
+    if debug_mode:
+        debug_dir = os.path.join(download_dir, "PDF_Debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        if status_callback:
+            status_callback(f"Debug mode enabled. Visualizations will be saved to {debug_dir}")
+
     for dir_path in [processed_dir, unprocessed_dir]:
         os.makedirs(dir_path, exist_ok=True)
 
     # Initialize processors
     try:
-        pdf_processor = PDFProcessor(use_ml=True)
+        pdf_processor = PDFProcessor(use_ml=True, debug_mode=debug_mode)
         excel_handler = ExcelHandler(excel_path)
 
         # Get list of PDF files in the folder
