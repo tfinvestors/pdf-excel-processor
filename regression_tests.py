@@ -255,7 +255,7 @@ def run_regression_tests(excel_path, pdf_dir):
 
 if __name__ == "__main__":
     # Set the paths for your test files
-    excel_path = "pdf_to_excel_testing_data.xlsx"
-    pdf_dir = "test_pdfs"
+    excel_path = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\pdf_to_excel_testing_data.xlsx"
+    pdf_dir = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\testing_invoice_pdf"
 
     run_regression_tests(excel_path, pdf_dir)
