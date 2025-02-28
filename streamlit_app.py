@@ -386,16 +386,31 @@ def show_main_page():
                         # Add processed PDFs
                         processed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Processed PDF")
                         if os.path.exists(processed_dir):
-                            for file in os.listdir(processed_dir):
-                                file_path = os.path.join(processed_dir, file)
-                                zip_file.write(file_path, os.path.join("Processed PDF", file))
+                            processed_files = [f for f in os.listdir(processed_dir) if f.lower().endswith('.pdf')]
+                            if processed_files:
+                                for file in processed_files:
+                                    file_path = os.path.join(processed_dir, file)
+                                    zip_file.write(file_path, os.path.join("Processed PDF", file))
+                            else:
+                                # Create an empty directory marker
+                                zip_info = zipfile.ZipInfo(os.path.join("Processed PDF", "/"))
+                                zip_info.external_attr = 0o755 << 16  # permissions
+                                zip_file.writestr(zip_info, "")
 
                         # Add unprocessed PDFs
                         unprocessed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Unprocessed PDF")
                         if os.path.exists(unprocessed_dir):
-                            for file in os.listdir(unprocessed_dir):
-                                file_path = os.path.join(unprocessed_dir, file)
-                                zip_file.write(file_path, os.path.join("Unprocessed PDF", file))
+                            unprocessed_files = [f for f in os.listdir(unprocessed_dir) if f.lower().endswith('.pdf')]
+                            if unprocessed_files:
+                                for file in unprocessed_files:
+                                    file_path = os.path.join(unprocessed_dir, file)
+                                    zip_file.write(file_path, os.path.join("Unprocessed PDF", file))
+                            else:
+                                # Create an empty directory marker
+                                zip_info = zipfile.ZipInfo(os.path.join("Unprocessed PDF", "/"))
+                                zip_info.external_attr = 0o755 << 16  # permissions
+                                zip_file.writestr(zip_info, "")
+
 
                     # Offer download of the zip file - ENHANCED VERSION
                     zip_buffer.seek(0)

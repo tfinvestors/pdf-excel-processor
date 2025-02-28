@@ -103,7 +103,7 @@ class PDFProcessor:
 
     def preprocess_image(self, img):
         """
-        Enhances image for better OCR accuracy.
+        Enhances image for better OCR accuracy with advanced preprocessing.
 
         Args:
             img (PIL.Image): The input image
@@ -111,15 +111,26 @@ class PDFProcessor:
         Returns:
             PIL.Image: Enhanced image
         """
-        img = img.convert('L')  # Convert to grayscale
-        img = ImageOps.autocontrast(img)  # Adaptive contrast enhancement
+        # Convert to grayscale
+        img = img.convert('L')
 
+        # Apply contrast enhancement
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+
+        # Convert to numpy array for OpenCV operations
         img_np = np.array(img)
-        img_np = cv2.fastNlMeansDenoising(img_np, None, 30, 7, 21)  # Noise Removal
-        img_np = cv2.GaussianBlur(img_np, (3, 3), 0)  # Slight Gaussian Blur
-        img_np = cv2.adaptiveThreshold(img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                       cv2.THRESH_BINARY, 15, 5)  # Adaptive Thresholding
 
+        # Apply noise reduction
+        img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)  # Reduced strength from 30 to 20
+
+        # Apply slight Gaussian blur
+        img_np = cv2.GaussianBlur(img_np, (3, 3), 0)
+
+        # Apply Otsu's thresholding (more adaptive than fixed threshold)
+        _, img_np = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # Return as PIL Image
         return Image.fromarray(img_np)
 
     def detect_text_structure(self, image):
@@ -170,7 +181,8 @@ class PDFProcessor:
                 logger.debug(f"Using PSM mode: {selected_psm}")
 
             # Custom config for financial documents
-            custom_config = f'{selected_psm} -l eng --oem 3 -c preserve_interword_spaces=1'
+            # custom_config = f'{selected_psm} -l eng --oem 3 -c preserve_interword_spaces=1'
+            custom_config = r'--oem 3 --psm 6 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
             extracted_text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
 
             return extracted_text
@@ -294,6 +306,44 @@ class PDFProcessor:
             logger.error(f"OCR error details: {str(e)}", exc_info=True)
         return text.strip()
 
+    def correct_ocr_text(self, text):
+        """
+        Correct common OCR errors using a domain-specific dictionary.
+
+        Args:
+            text (str): OCR-extracted text
+
+        Returns:
+            str: Corrected text
+        """
+        corrections = {
+            "0rienta1": "Oriental",
+            "0riental": "Oriental",
+            "0rient": "Orient",
+            "lnsurance": "Insurance",
+            "1nsurance": "Insurance",
+            "lndia": "India",
+            "1ndia": "India",
+            "c1aim": "claim",
+            "pol1cy": "policy",
+            "po1icy": "policy",
+            "c1ient": "client",
+            "rece1pt": "receipt",
+            "remittance": "remittance",
+            "HSBC;": "HSBC",
+            "HS8C": "HSBC",
+            "H5BC": "HSBC",
+            "UNlTED": "UNITED",
+            "UN1TED": "UNITED",
+            "lnvoice": "Invoice",
+            "lnv": "Inv"
+        }
+
+        for error, correction in corrections.items():
+            text = text.replace(error, correction)
+
+        return text
+
     def extract_text(self, pdf_path):
         """
         Extract text from PDF using multiple methods and combine results.
@@ -353,6 +403,9 @@ class PDFProcessor:
 
         # Clean up the text
         combined_text = self.clean_text(combined_text)
+
+        # Apply dictionary-based corrections
+        combined_text = self.correct_ocr_text(combined_text)
 
         # Save combined text for debugging
         if self.debug_mode and self.debug_dir:

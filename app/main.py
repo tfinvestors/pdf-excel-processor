@@ -17,6 +17,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
+def move_to_appropriate_folder(pdf_path, success, processed_dir, unprocessed_dir):
+    """
+    Move PDF to the appropriate folder based on processing success.
+
+    Args:
+        pdf_path (str): Path to the PDF file
+        success (bool): Whether processing was successful
+        processed_dir (str): Path to the processed directory
+        unprocessed_dir (str): Path to the unprocessed directory
+
+    Returns:
+        str: Path to the destination where file was copied
+    """
+    pdf_file = os.path.basename(pdf_path)
+
+    if success:
+        # Only copy to processed folder
+        destination = os.path.join(processed_dir, pdf_file)
+        shutil.copy2(pdf_path, destination)
+        return destination
+    else:
+        # Only copy to unprocessed folder
+        destination = os.path.join(unprocessed_dir, pdf_file)
+        shutil.copy2(pdf_path, destination)
+        return destination
+
 
 # In app/main.py - Update the process_files function
 
@@ -61,7 +87,14 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
     for dir_path in [processed_dir, unprocessed_dir]:
         os.makedirs(dir_path, exist_ok=True)
 
-    # Initialize processors
+    # Clear the output directories before processing
+    for dir_path in [processed_dir, unprocessed_dir]:
+        if os.path.exists(dir_path):
+            for file in os.listdir(dir_path):
+                file_path = os.path.join(dir_path, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
     # Initialize processors
     try:
         pdf_processor = PDFProcessor(
@@ -99,13 +132,13 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                         status_callback(f"❌ Failed to extract text from {pdf_file}")
 
                     # Move to unprocessed folder
-                    shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                    move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                     results['unprocessed'] += 1
                     results['files']['unprocessed'].append(pdf_file)
                     continue
 
                 # Log first 500 chars of extracted text for debugging
-                logger.debug(f"Extracted text sample: {extracted_text[:500]}")
+                logger.debug(f"Extracted text sample: {extracted_text[:500000000]}")
 
                 # Extract data points and potential table data
                 unique_id, data_points, table_data = pdf_processor.extract_data_points(extracted_text)
@@ -129,7 +162,8 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                                 f"✅ Successfully processed {table_results['processed']} of {table_results['total']} rows from {pdf_file}")
 
                         # Move to processed folder
-                        shutil.copy2(pdf_path, os.path.join(processed_dir, pdf_file))
+                        # Move to appropriate folder
+                        move_to_appropriate_folder(pdf_path, True, processed_dir, unprocessed_dir)
                         results['processed'] += 1
                         results['files']['processed'].append(pdf_file)
                     else:
