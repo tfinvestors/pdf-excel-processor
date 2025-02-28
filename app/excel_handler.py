@@ -139,6 +139,7 @@ class ExcelHandler:
     def compute_tds(self, amount, text):
         """
         Compute TDS based on the receipt amount and text content.
+        Enhanced to better detect insurance companies with various name formats.
 
         Args:
             amount (float): The receipt amount
@@ -154,30 +155,64 @@ class ExcelHandler:
                 "united india insurance company limited",
                 "the new india assurance co. ltd",
                 "oriental insurance co ltd",
-                "oriental insurance"  # Add shorter version
+                "oriental insurance",
+                "national insurance",
+                "united india insurance",
+                "new india assurance",
+                "oriental insurance",
+                "united india",
+                "new india",
+                "oriental",
+                "0rienta1"
             ]
 
             # Normalize the text for better matching
             normalized_text = ' '.join(text.lower().split())
-            logger.debug(f"Normalized text for insurance detection (first 200 chars): {normalized_text[:200]}...")
+            logger.debug(
+                f"Normalized text for insurance detection (first a few hundred chars): {normalized_text[:300]}...")
 
             # Check for insurance company with more flexible matching
             contains_insurance_company = False
             detected_company = None
 
-            for company in insurance_companies:
-                # Check for exact match
-                if company in normalized_text:
+            # Check for explicit mention of oriental/national/united insurance (first priority)
+            insurance_keywords = ["oriental", "national", "united india", "new india"]
+            for keyword in insurance_keywords:
+                if keyword in normalized_text and "insurance" in normalized_text:
+                    detected_company = f"{keyword} insurance"
                     contains_insurance_company = True
-                    detected_company = company
+                    logger.info(f"Explicitly detected {keyword} insurance in the text")
                     break
 
-                # Check for partial match (key parts of company name)
-                key_parts = [part for part in company.split() if len(part) > 3]
-                if all(part in normalized_text for part in key_parts):
+            # If not found, try more specific matches
+            if not contains_insurance_company:
+                for company in insurance_companies:
+                    # Check for exact match
+                    if company in normalized_text:
+                        contains_insurance_company = True
+                        detected_company = company
+                        logger.info(f"Detected insurance company: {company}")
+                        break
+
+                    # Check for partial match (key parts of company name)
+                    key_parts = [part for part in company.split() if len(part) > 3 and part != "insurance"]
+                    if key_parts and all(part in normalized_text for part in key_parts):
+                        contains_insurance_company = True
+                        detected_company = company
+                        logger.info(f"Detected insurance company by key parts: {company} (parts: {key_parts})")
+                        break
+
+            # Additional checks for specific PDF types
+            # For HSBC documents, check for insurance company clues
+            if "hsbc" in normalized_text:
+                # Look specifically for mentions of insurance companies in remitter info
+                remitter_info_match = re.search(r'remitter.*?information:.*?(oriental|national|united|new india)',
+                                                normalized_text, re.IGNORECASE | re.DOTALL)
+                if remitter_info_match:
+                    insurance_name = remitter_info_match.group(1).lower()
                     contains_insurance_company = True
-                    detected_company = company
-                    break
+                    detected_company = f"{insurance_name} insurance"
+                    logger.info(f"Detected {insurance_name} insurance from HSBC remitter information")
 
             # Apply the appropriate calculation
             if contains_insurance_company:

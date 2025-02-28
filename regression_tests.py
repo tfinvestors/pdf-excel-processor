@@ -202,24 +202,31 @@ class PDFExtractionTester:
 def create_test_cases():
     tester = PDFExtractionTester()
 
+    # Update constructor to pass poppler path
+    tester.pdf_processor = PDFProcessor(
+        use_ml=True,
+        debug_mode=True,
+        poppler_path="C:\\poppler-24.08.0\\Library\\bin"  # Update with your path
+    )
+
     # Test case for OICL ADVICE.pdf
     oicl_expected = {
-        "unique_id": "510000/11/2025/000000",
+        "unique_id": "270011/11/2025/000300",
         "data_points": {
-            "receipt_amount": "201156",
-            "receipt_date": "11-02-2025",
-            "tds": "22350.67"  # 11.111111% of 201,156
+            "receipt_amount": "229843",
+            "receipt_date": "30-12-2024",
+            "tds": "25538.11"  # 11.111111% of 201,156
         }
     }
     tester.add_test_case("OICL ADVICE.pdf", oicl_expected)
 
     # Test case for UNITED ADVICE.pdf
     united_expected = {
-        "unique_id": "5004002624C05021400",
+        "unique_id": "2502002624C050122001",
         "data_points": {
-            "receipt_amount": "7738.00",
-            "receipt_date": "12-02-2025",
-            "tds": "859.77"  # 11.111111% of 7,738.00
+            "receipt_amount": "3838.00",
+            "receipt_date": "29-01-2025",
+            "tds": "426.44"  # 11.111111% of 7,738.00
         }
     }
     tester.add_test_case("UNITED ADVICE (1).pdf", united_expected)
@@ -255,7 +262,7 @@ def run_regression_tests(excel_path, pdf_dir):
 
 if __name__ == "__main__":
     # Set the paths for your test files
-    excel_path = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\pdf_to_excel_testing_data.xlsx"
-    pdf_dir = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\testing_invoice_pdf"
+    excel_path = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\pdf_to_excel_testing_data_2.xlsx"
+    pdf_dir = r"D:\backup 22.9.21\PSEPL\CDMS\Automation Project\PDF to Excel\UAT\testing_invoice_pdf_2"
 
     run_regression_tests(excel_path, pdf_dir)

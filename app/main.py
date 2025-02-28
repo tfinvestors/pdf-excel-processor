@@ -62,8 +62,13 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
         os.makedirs(dir_path, exist_ok=True)
 
     # Initialize processors
+    # Initialize processors
     try:
-        pdf_processor = PDFProcessor(use_ml=True, debug_mode=debug_mode)
+        pdf_processor = PDFProcessor(
+            use_ml=True,
+            debug_mode=debug_mode,
+            poppler_path="C:\\poppler-24.08.0\\Library\\bin"  # Update with your poppler path
+        )
         excel_handler = ExcelHandler(excel_path)
 
         # Get list of PDF files in the folder
