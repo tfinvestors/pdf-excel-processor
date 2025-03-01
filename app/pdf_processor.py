@@ -432,10 +432,126 @@ class PDFProcessor:
 
         return text.strip()
 
+    # Add a method for generic pattern extraction
+    def extract_generic_data(self, text):
+        """
+        Extract data using generic patterns when provider-specific patterns fail.
+        """
+        data = {}
+
+        # Generic patterns for unique identifiers
+        unique_id_patterns = [
+            # Claim number formats
+            r'claim\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            r'claim\s*[:.\s]\s*(\S+)',
+            # Invoice number formats
+            r'invoice\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            r'inv\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            # Policy number formats
+            r'policy\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            # Reference number formats
+            r'ref(?:erence)?\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            r'our\s+ref(?:erence)?\s*:?\s*(\S+)',
+            r'your\s+ref(?:erence)?\s*:?\s*(\S+)',
+            # UTR/Payment reference
+            r'utr\s+(?:no|number|#)\.?\s*:?\s*(\S+)',
+            r'payment\s+ref(?:erence)?\s*:?\s*(\S+)',
+            # Common claim number formats
+            r'\d{6}/\d{2}/\d{4}/\d+',  # Format like 510000/11/2025/000000
+            r'\d{19}',  # Long numeric ID
+            r'\d{10}[cC]\d{8}',  # Format like 2502002624C050122001
+            r'2425-\d{5}',  # Invoice format
+        ]
+
+        # Try to extract unique ID using patterns
+        for pattern in unique_id_patterns:
+            try:
+                if '(' in pattern:  # Pattern has a capture group
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        data['unique_id'] = match.group(1).strip()
+                        logger.debug(f"Extracted unique ID with pattern {pattern}: {data['unique_id']}")
+                        break
+                else:  # Pattern is a direct match without capture groups
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        data['unique_id'] = match.group(0).strip()
+                        logger.debug(f"Extracted unique ID with direct pattern: {data['unique_id']}")
+                        break
+            except Exception as e:
+                logger.warning(f"Error with pattern {pattern}: {str(e)}")
+
+        # Generic patterns for amount
+        amount_patterns = [
+            r'amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'remittance\s+amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'payment\s+amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'net\s+amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'gross\s+amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'(?:rs\.?|inr)\s*([0-9,.]+)',
+            r'rupees\s+([a-zA-Z\s]+)\s+only',  # For amounts in words
+        ]
+
+        # Try to extract amount
+        for pattern in amount_patterns:
+            amount_match = re.search(pattern, text, re.IGNORECASE)
+            if amount_match:
+                # Check if the pattern captures the amount or if it's in words
+                if 'rupees' in pattern.lower():
+                    # Convert words to numbers - would need a more sophisticated conversion in practice
+                    words_amount = amount_match.group(1).strip().lower()
+                    # This is a placeholder - a real implementation would convert word amounts to numbers
+                    logger.warning(f"Amount in words detected but not converted: {words_amount}")
+                else:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted amount: {data['receipt_amount']}")
+                break
+
+        # Generic patterns for date
+        date_patterns = [
+            r'date\s*:?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+            r'date\s*:?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+            r'value\s+date\s*:?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+            r'payment\s+date\s*:?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+            r'(?:settlement|transaction)\s+date\s*:?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+            r'date\s*:?\s*(\d{1,2}\s+[a-zA-Z]{3}\s+\d{4})',  # Format like "11 Feb 2025"
+        ]
+
+        # Try to extract date
+        for pattern in date_patterns:
+            date_match = re.search(pattern, text, re.IGNORECASE)
+            if date_match:
+                data['receipt_date'] = date_match.group(1).strip()
+                logger.debug(f"Extracted date: {data['receipt_date']}")
+                break
+
+        # Generic patterns for TDS
+        tds_patterns = [
+            r'tds\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'tds\s+amount\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'less\s*:?\s*tds\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            r'tax\s+deducted\s+at\s+source\s*:?\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+        ]
+
+        # Try to extract TDS
+        for pattern in tds_patterns:
+            tds_match = re.search(pattern, text, re.IGNORECASE)
+            if tds_match:
+                data['tds'] = tds_match.group(1).strip().replace(',', '')
+                data['tds_computed'] = 'No'  # TDS already present in the document
+                logger.debug(f"Extracted TDS: {data['tds']}")
+                break
+
+        # Log the results
+        logger.debug(f"Generic extraction results: {data}")
+
+        return data
+
+    # Expand provider identification in extract_bank_specific_data
     def extract_bank_specific_data(self, text):
         """
         Extract data specifically from banking documents (payment advices).
-        Enhanced with patterns from both PDFs in your test case.
+        Enhanced to support multiple insurance providers.
         """
         data = {}
 
@@ -443,90 +559,116 @@ class PDFProcessor:
         normalized_text = ' '.join(text.lower().split())
         logger.debug(f"Normalized text for pattern matching: {normalized_text[:200]}...")
 
-        # HSBC Format (OICL ADVICE)
-        if "hsbc" in normalized_text or "oriental insurance" in normalized_text:
-            logger.debug("Detected HSBC/Oriental Insurance format")
+        # Create a list of all insurance providers to check
+        insurance_providers = {
+            "oriental": ["hsbc", "oriental insurance", "oicl", "the oriental insurance"],
+            "united": ["axis bank", "united india insurance", "united india", "uiic"],
+            "tata_aig": ["tata aig", "tataaig", "noreply", "claim number"],
+            "reliance": ["reliance general", "sterlit", "sector-1"],
+            "hdfc_ergo": ["hdfc ergo", "business suraksha", "hdfcn5"],
+            "future_generali": ["future generali", "embassy 247", "hdfcn5"],
+            "iffco_tokio": ["iffco", "tokio", "paid claims notification"],
+            "liberty": ["liberty", "international center", "senapati"],
+            "national": ["national insurance", "paid claims notification"],
+            "universal_sompo": ["universal sompo", "ackruti star", "protocol house"],
+            "new_india": ["new india", "payment of rs", "assurance"],
+            "bajaj_allianz": ["bajaj allianz", "standard chartered", "scbln"],
+            "cholamandalam": ["cholamandalam", "ms genera", "protocol house"]
+        }
 
-            # Look for claim number in a table structure
-            # First check specifically for a claim number in a table format with explicit column header
-            for claim_label in self.client_ref_columns:
-                # Create pattern to match the label in table context
-                table_pattern = rf'{claim_label}\s*\n?.*?(\d+/\d+/\d+/\d+)'
-                claim_match = re.search(table_pattern, text, re.IGNORECASE | re.DOTALL)
+        # Determine the insurance provider
+        detected_provider = None
+        for provider, keywords in insurance_providers.items():
+            if any(keyword in normalized_text for keyword in keywords):
+                detected_provider = provider
+                logger.info(f"Detected insurance provider: {provider}")
+                break
+
+        # If no provider detected, try to extract using generic patterns
+        if not detected_provider:
+            logger.info("No specific insurance provider detected. Using generic patterns.")
+            return self.extract_generic_data(text)
+
+        # Provider-specific extraction patterns
+        if detected_provider == "oriental":
+            # HSBC/Oriental Insurance format
+            logger.debug("Extracting data using Oriental Insurance patterns")
+
+            # Look for claim number in various formats
+            claim_patterns = [
+                r'claim\s+number.*?(\d{6}/\d{2}/\d{4}/\d+)',
+                r'510000/11/(\d{4}/\d+)',
+                r'claim\s+number\s*510000/11/\d{4}/\d+',
+                r'(\d{6}/\d{2}/\d{4}/\d+)',
+                r'claim\s+number.*?\n.*?(\d+/\d+/\d+/\d+)'
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, normalized_text, re.IGNORECASE)
                 if claim_match:
-                    data['unique_id'] = claim_match.group(1).strip()
-                    logger.debug(f"Extracted claim number using label '{claim_label}': {data['unique_id']}")
-                    break
-
-            # If no match found from explicit labels, try general patterns
-            if 'unique_id' not in data:
-                claim_match = re.search(r'claim\s+number.*?(\d{6}/\d{2}/\d{4}/\d+)', normalized_text, re.IGNORECASE) or \
-                              re.search(r'510000/11/(\d{4}/\d+)', normalized_text, re.IGNORECASE) or \
-                              re.search(r'claim\s+number\s*510000/11/\d{4}/\d+', normalized_text, re.IGNORECASE) or \
-                              re.search(r'(\d{6}/\d{2}/\d{4}/\d+)', normalized_text) or \
-                              re.search(r'claim\s+number.*?\n.*?(\d+/\d+/\d+/\d+)', text, re.IGNORECASE | re.DOTALL)
-
-                if claim_match:
-                    # If full claim number is found, use it
                     if "510000/11" in claim_match.group(0):
                         data['unique_id'] = claim_match.group(0).strip()
                     else:
                         data['unique_id'] = claim_match.group(1).strip()
-                    logger.debug(f"Extracted claim number using generic pattern: {data['unique_id']}")
+                    logger.debug(f"Extracted claim number: {data['unique_id']}")
+                    break
 
-            # Extract remittance amount - in HSBC format it appears in a specific format
-            # Try multiple patterns
+            # Extract remittance amount
             amount_patterns = [
                 r'remittance\s+amount\s*:?\s*(?:inr)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+                r'debit\s+amount\s*:?\s*(?:inr)?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
                 r'amount.*?(\d{6}(?:\.\d{2})?)',
                 r'amount\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
-                # Table format with Amount column
-                r'amount\s*(?:\n.*?)?(\d+(?:,\d{3})*(?:\.\d{2})?)',
             ]
 
             for pattern in amount_patterns:
                 amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
                 if amount_match:
                     data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
-                    logger.debug(f"Extracted amount using pattern '{pattern}': {data['receipt_amount']}")
+                    logger.debug(f"Extracted amount: {data['receipt_amount']}")
                     break
 
             # Extract date
             date_patterns = [
                 r'value\s+date\s*:?\s*(\d{1,2}\s+[a-z]+\s+\d{4})',
                 r'advice\s+sending\s+date\s*:?\s*(\d{1,2}\s+[a-z]+\s+\d{4})',
-                r'\d{1,2}\s+[a-z]+\s+\d{4}',  # Generic date pattern
+                r'\d{1,2}\s+[a-z]+\s+\d{4}',
             ]
 
             for pattern in date_patterns:
                 date_match = re.search(pattern, normalized_text, re.IGNORECASE)
                 if date_match:
                     data['receipt_date'] = date_match.group(0).strip()
-                    logger.debug(f"Extracted date using pattern '{pattern}': {data['receipt_date']}")
+                    logger.debug(f"Extracted date: {data['receipt_date']}")
                     break
 
-        # AXIS/UNITED INDIA Format
-        elif "axis bank" in normalized_text or "united india insurance" in normalized_text:
-            logger.debug("Detected AXIS Bank/United India Insurance format")
+        elif detected_provider == "united":
+            # AXIS/United India format
+            logger.debug("Extracting data using United India Insurance patterns")
 
-            # Extract claim number - appears in a specific format
+            # Extract claim number
             claim_patterns = [
                 r'claim#\s*.*?(\d{10}c\d{8})',
                 r'claim\s*[\s#:]*\s*(\d{10}c\d{8})',
                 r'(\d{10}c\d{8})',
                 r'claim#\s*(5004\d{10})',
                 r'payment\s+ref\.\s+no\.\s*:\s*(\d{18})',
-                r'(5004\d{10})',  # Generic pattern for UNITED format claim numbers
+                r'(5004\d{10})',
+                r'claim#\s*(\d{19})',
+                r'enrichment:[\s\S]*?claim#\s*(\S+)',
+                r'2502\d+C\d+',
             ]
 
             for pattern in claim_patterns:
-                claim_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
                 if claim_match:
-                    # Use the full match if it contains the expected pattern
-                    if "5004" in claim_match.group(0) or "c" in claim_match.group(0).lower():
+                    if "5004" in claim_match.group(0) or "c" in claim_match.group(
+                            0).lower() or "2502" in claim_match.group(0):
                         data['unique_id'] = claim_match.group(0).strip()
-                    else:
+                    elif '(' in pattern:
                         data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
                     logger.debug(f"Extracted claim number: {data['unique_id']}")
                     break
 
@@ -537,13 +679,15 @@ class PDFProcessor:
                 r'(?:rs\.?|inr)\s*(\d+\.\d{2})',
                 r'amount\s*:?\s*(\d+\.\d{2})',
                 r'invoice\s+amount\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',
-                r'7,738\.00',  # Specific to UNITED ADVICE sample
+                r'neft.*?amount\s*:\s*([0-9,.]+)',
+                r'remittance amount\s*:\s*([0-9,.]+)',
             ]
 
             for pattern in amount_patterns:
                 amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
                 if amount_match:
-                    data['receipt_amount'] = amount_match.group(0).strip().replace(',', '')
+                    amt = amount_match.group(1) if '(' in pattern else amount_match.group(0)
+                    data['receipt_amount'] = amt.strip().replace(',', '')
                     if data['receipt_amount'].startswith('rs') or data['receipt_amount'].startswith('inr'):
                         data['receipt_amount'] = re.sub(r'[^\d.]', '', data['receipt_amount'])
                     logger.debug(f"Extracted amount: {data['receipt_amount']}")
@@ -554,13 +698,13 @@ class PDFProcessor:
                 r'payment\s+ini\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
                 r'date\s*:?\s*(\d{2}-\d{2}-\d{4})',
                 r'invoice\s+date\s*(\d{2}-\d{2}-\d{4})',
-                r'(\d{2}-\d{2}-\d{4})',  # Generic date pattern
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                r'(\d{2}-\d{2}-\d{4})',
             ]
 
             for pattern in date_patterns:
                 date_match = re.search(pattern, normalized_text, re.IGNORECASE)
                 if date_match:
-                    # If the pattern has a group, extract it
                     if '(' in pattern:
                         data['receipt_date'] = date_match.group(1).strip()
                     else:
@@ -568,17 +712,508 @@ class PDFProcessor:
                     logger.debug(f"Extracted date: {data['receipt_date']}")
                     break
 
-        # Log extracted data for debugging
+        elif detected_provider == "tata_aig":
+            # TATA AIG format
+            logger.debug("Extracting data using TATA AIG patterns")
+
+            # Look for claim number pattern
+            claim_patterns = [
+                r'claim\s+number\s*[–\-:]\s*(\d+)',
+                r'payment\s+details\s+for\s*[–\-:]\s*claim\s+number\s*[–\-:]\s*(\d+)',
+                r'payment of :-.*?s fees for invoice (\d+-\d+)',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if claim_match:
+                    data['unique_id'] = claim_match.group(1).strip()
+                    logger.debug(f"Extracted TATA AIG claim/invoice number: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'net\s+payable\s+amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                r'payment\s+amount:\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                r'rs\.\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted TATA AIG amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'date:\s*(\d{2}/\d{2}/\d{4})',
+                r'date:\s*(\d{2}-\d{2}-\d{4})',
+                r'value\s+date:\s*(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted TATA AIG date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS if available
+            tds_patterns = [
+                r'tds\s+amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                r'tds\s*:\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'  # TDS already present in the document
+                    logger.debug(f"Extracted TATA AIG TDS: {data['tds']}")
+                    break
+
+        elif detected_provider == "hdfc_ergo":
+            # HDFC ERGO format
+            logger.debug("Extracting data using HDFC ERGO patterns")
+
+            # Extract claim/policy number
+            claim_patterns = [
+                r'claim\s+no\s*\|\s*(\S+)',
+                r'policy\s+no\s*\|\s*(\S+)',
+                r'C\d+\-\d+',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
+                    if '|' in pattern:
+                        data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted HDFC ERGO claim number: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'amount\s*:\s*([0-9,.]+)',
+                r'gross\s+amt\s*\|\s*([0-9,.]+)',
+                r'net_pay\s*\|\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted HDFC ERGO amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                r'date\s*(\d{2}/\d{2}/\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted HDFC ERGO date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS
+            tds_patterns = [
+                r'less\s*:\s*tds\s*\|\s*([0-9,.]+)',
+                r'tds\s+amount\s*\|\s*([0-9,.]+)',
+                r'tds\s+amt\s*\|\s*([0-9,.]+)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted HDFC ERGO TDS: {data['tds']}")
+                    break
+
+        elif detected_provider == "future_generali":
+            # Future Generali format
+            logger.debug("Extracting data using Future Generali patterns")
+
+            # Extract claim/reference number
+            claim_patterns = [
+                r'our\s+ref\s*:\s*(\S+)',
+                r'your\s+ref:\s*(\S+)',
+                r'b\d+\s+claims\s+payment',
+                r'invoice\s+details\s*.*?(\d+-\d+)',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if claim_match:
+                    if 'ref' in pattern.lower():
+                        data['unique_id'] = claim_match.group(1).strip()
+                    elif 'invoice' in pattern.lower():
+                        data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted Future Generali reference: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'amount\s*:\s*([0-9,.]+)',
+                r'amount\s+in\s+words\s*:\s*.*?([0-9,.]+)',
+                r'rupees.*?([0-9,.]+).*?only',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Future Generali amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                r'chq\s*/dd/ft\s+no\s*:.*?value\s+date\s*:(\d{2}/\d{2}/\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Future Generali date: {data['receipt_date']}")
+                    break
+
+        elif detected_provider in ["iffco_tokio", "national"]:
+            # IFFCO Tokio or National Insurance format
+            logger.debug(f"Extracting data using {detected_provider} patterns")
+
+            # Extract claim/policy number
+            claim_patterns = [
+                r'sub\s+claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'policy\s+number\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'\d+\d+\d+\-\d+',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
+                    if '(' in pattern:
+                        data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted {detected_provider} claim number: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'net\s+paid\s+amount\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
+                r'शुद्ध भुगतान राशि\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted {detected_provider} amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'निपटान की तारीख\s*(?:\/|\\|\.)*\s*(\d{2}-\d{2}-\d{4})',
+                r'settlement\s+date\s*(?:\/|\\|\.)*\s*(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted {detected_provider} date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS
+            tds_patterns = [
+                r'टीडीएस राशि\s*(?:\/|\\|\.)*\s*([0-9,.]+)',
+                r'tds\s+amount\s*(?:\/|\\|\.)*\s*([0-9,.]+)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted {detected_provider} TDS: {data['tds']}")
+                    break
+
+        elif detected_provider == "liberty":
+            # Liberty format
+            logger.debug("Extracting data using Liberty patterns")
+
+            # Extract reference number
+            ref_patterns = [
+                r'your\s+reference\s*:\s*(\d+)',
+                r'misc\s+reference\s*:\s*(\d+)',
+                r'\d{15,}',
+            ]
+
+            for pattern in ref_patterns:
+                ref_match = re.search(pattern, text, re.IGNORECASE)
+                if ref_match:
+                    if '(' in pattern:
+                        data['unique_id'] = ref_match.group(1).strip()
+                    else:
+                        data['unique_id'] = ref_match.group(0).strip()
+                    logger.debug(f"Extracted Liberty reference: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'payment\s+amount\s*:\s*([0-9,.]+)',
+                r'payment\s+amount:\s*([0-9,.]+)',
+                r'gross\s+amount\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Liberty amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'value\s+date\s*:\s*(\d{2}-\d{2}-\d{4})',
+                r'date\s*:\s*(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Liberty date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS
+            tds_patterns = [
+                r'tds\s*([0-9,.]+)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted Liberty TDS: {data['tds']}")
+                    break
+
+        elif detected_provider == "universal_sompo":
+            # Universal Sompo format
+            logger.debug("Extracting data using Universal Sompo patterns")
+
+            # Extract reference number
+            ref_patterns = [
+                r'client\s+ref\s+no\s*:\s*(\d+)',
+                r'payment\s+ref\.\s+no\.\s*:\s*(\d+)',
+                r'CL\d+',
+            ]
+
+            for pattern in ref_patterns:
+                ref_match = re.search(pattern, text, re.IGNORECASE)
+                if ref_match:
+                    if '(' in pattern:
+                        data['unique_id'] = ref_match.group(1).strip()
+                    else:
+                        data['unique_id'] = ref_match.group(0).strip()
+                    logger.debug(f"Extracted Universal Sompo reference: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'amount\s*:\s*([0-9,.]+)',
+                r'(?:Rs\.?|INR)?\s*([0-9,.]+)',
+                r'rupees.*?([0-9,.]+).*?only',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Universal Sompo amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                r'date\s*:\s*(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Universal Sompo date: {data['receipt_date']}")
+                    break
+
+        elif detected_provider == "new_india":
+            # New India Assurance format
+            logger.debug("Extracting data using New India Assurance patterns")
+
+            # Extract claim/policy number
+            claim_patterns = [
+                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'policy\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'invoice\s+number.*?(\d+-\d+)',
+                r'\d{12,}',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if claim_match:
+                    if '(' in pattern:
+                        data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted New India Assurance claim number: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'we have instructed our bank to remit an amount of Rs\.([0-9,.]+)',
+                r'amount\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
+                r'amt\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted New India Assurance amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_match = re.search(r'Date\s*:\s*\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\w{3}\s+(\d{4})', text)
+            if date_match:
+                year = date_match.group(1)
+                # Try to find day and month
+                date_parts_match = re.search(r'Date\s*:\s*\w{3}\s+(\w{3})\s+(\d{1,2})', text)
+                if date_parts_match:
+                    month = date_parts_match.group(1)
+                    day = date_parts_match.group(2)
+                    data['receipt_date'] = f"{day}-{month}-{year}"
+                    logger.debug(f"Extracted New India Assurance date: {data['receipt_date']}")
+
+            # Extract TDS if present
+            tds_match = re.search(r'(-\d+\.\d+)', text)
+            if tds_match:
+                tds_value = tds_match.group(1).strip()
+                if tds_value.startswith('-'):
+                    tds_value = tds_value[1:]  # Remove the minus sign
+                    data['tds'] = tds_value
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted New India Assurance TDS: {data['tds']}")
+
+        elif detected_provider in ["bajaj_allianz", "cholamandalam"]:
+            # Bajaj Allianz/Cholamandalam format
+            logger.debug(f"Extracting data using {detected_provider} patterns")
+
+            # Extract claim/reference number
+            claim_patterns = [
+                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
+                r'oc-\d+-\d+-\d+',
+                r'inv\s+ref:claim\s+no\s*:\s*(\d+)',
+                r'settlement\s+reference\s*:\s*(\S+)',
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
+                    if '(' in pattern:
+                        data['unique_id'] = claim_match.group(1).strip()
+                    else:
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted {detected_provider} claim number: {data['unique_id']}")
+                    break
+
+            # Extract amount
+            amount_patterns = [
+                r'remittance\s+amount\s*:\s*([0-9,.]+)',
+                r'amount\s*\(inr\)\s*([0-9,.]+)',
+                r'amount\s*:\s*([0-9,.]+)',
+                r'gross\s+amt\s*(?:ser\s+tax)?\s*([0-9,.]+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted {detected_provider} amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'value\s+date\s*:?\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                r'date\s*:\s*(\d{2}/\d{1,2}/\d{4})',
+                r'advice\s+date\s*:\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted {detected_provider} date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS
+            tds_patterns = [
+                r'tds\s+amt\s*([0-9,.]+)',
+                r'tds\s+amount\s*([0-9,.]+)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted {detected_provider} TDS: {data['tds']}")
+                    break
+
+            # If we have not found a unique ID yet, try the invoice number patterns as a fallback
+        if 'unique_id' not in data or not data['unique_id']:
+            invoice_patterns = [
+                r'invoice\s+no\.?\s*:?\s*(\S+)',
+                r'bill\s+no\.?\s*:?\s*(\S+)',
+                r'invoice\s+number\s*:?\s*(\S+)',
+                r'payment\s+details\s+\d+\s*:?\s*(\S+)',
+                r'payment\s+details\s+\d+\s*:?\s*(\d{4}-\d{5})',
+            ]
+
+            for pattern in invoice_patterns:
+                invoice_match = re.search(pattern, text, re.IGNORECASE)
+                if invoice_match:
+                    data['unique_id'] = invoice_match.group(1).strip()
+                    logger.debug(f"Extracted invoice number as unique ID: {data['unique_id']}")
+                    break
+
+            # Log extracted data for debugging
         if data:
-            logger.debug(f"Bank-specific extraction results: {data}")
+            logger.debug(f"Provider-specific extraction results: {data}")
         else:
-            logger.debug("No data extracted using bank-specific patterns")
+            logger.debug("No data extracted using provider-specific patterns")
 
         return data
 
     def extract_data_points(self, text, expected_fields=None):
         """
-        Extract required data points from text - with highly targeted claim number extraction.
+        Extract required data points from text with enhanced handling for all document types.
+        Combines targeted claim number extraction with provider-specific and generic patterns.
         """
         if not text:
             logger.warning("No text provided for data extraction")
@@ -588,17 +1223,16 @@ class PDFProcessor:
         logger.info(f"Text length for extraction: {len(text)}")
 
         # Initialize data extraction results
-        data = {
-            'unique_id': None,
-            'data_points': {}
-        }
+        data_points = {}
+        unique_id = None
 
-        # Check if this is an HSBC/Oriental document - using a more inclusive check
-        is_hsbc_doc = any(keyword.lower() in text.lower() for keyword in ["HSBC", "Oriental Insurance", "Oriental", "0rienta1"])
+        # Check if this is an HSBC/Oriental document
+        is_hsbc_doc = any(
+            keyword.lower() in text.lower() for keyword in ["HSBC", "Oriental Insurance", "Oriental", "0rienta1"])
 
-        # FIRST PRIORITY: For HSBC/Oriental documents, look for claim numbers directly
+        # FIRST PRIORITY: For HSBC/Oriental documents, use the specialized approach
         if is_hsbc_doc:
-            logger.info("HSBC/Oriental Insurance document detected")
+            logger.info("HSBC/Oriental Insurance document detected, using specialized extraction")
 
             # Get all ID patterns matching the claim number format
             id_pattern = r'\d+/\d+/\d+/\d+'
@@ -612,7 +1246,7 @@ class PDFProcessor:
                 logger.info(f"Found multiple ID patterns. First: {policy_no}, Second: {claim_no}")
 
                 # We'll set the claim number as our unique ID
-                data['unique_id'] = claim_no
+                unique_id = claim_no
 
                 # Also check if we can find a direct indicator of the claim number
                 policy_label_pos = text.find("Policy no")
@@ -630,46 +1264,72 @@ class PDFProcessor:
 
                     if len(chunk_ids) >= 2:
                         # Policy number should be first, claim number should be second
-                        data['unique_id'] = chunk_ids[1]
-                        logger.info(f"From chunk analysis, selected claim number: {data['unique_id']}")
+                        unique_id = chunk_ids[1]
+                        logger.info(f"From chunk analysis, selected claim number: {unique_id}")
 
-        # If we don't have a unique ID yet, continue with standard extraction
-        if not data['unique_id']:
-            # Bank-specific extraction
+            # Extract specific fields using HSBC/Oriental patterns
+            if unique_id:
+                # Amount patterns
+                amount_patterns = [
+                    r'Remittance\s+amount\s*:?\s*(?:INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Amount.*?(\d{6}(?:\.\d{2})?)',
+                    r'Debit\s+amount\s*:?\s*(?:INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                ]
+
+                for pattern in amount_patterns:
+                    amount_match = re.search(pattern, text, re.IGNORECASE)
+                    if amount_match:
+                        data_points['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                        logger.debug(f"Extracted HSBC amount: {data_points['receipt_amount']}")
+                        break
+
+                # Date patterns
+                date_patterns = [
+                    r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
+                    r'Advice\s+sending\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
+                ]
+
+                for pattern in date_patterns:
+                    date_match = re.search(pattern, text, re.IGNORECASE)
+                    if date_match:
+                        data_points['receipt_date'] = date_match.group(1).strip()
+                        logger.debug(f"Extracted HSBC date: {data_points['receipt_date']}")
+                        break
+
+        # SECOND PRIORITY: If HSBC/Oriental approach didn't work or it's another document type,
+        # try the bank-specific extraction approach
+        if not unique_id or not data_points:
+            logger.info("Using bank-specific extraction approach")
             bank_data = self.extract_bank_specific_data(text)
-            if bank_data and 'unique_id' in bank_data:
-                data['unique_id'] = bank_data['unique_id']
-                # Add other extracted data
+
+            if bank_data:
+                # Get unique ID if available
+                if 'unique_id' in bank_data and bank_data['unique_id']:
+                    unique_id = bank_data['unique_id']
+                    logger.info(f"Found unique ID from bank-specific extraction: {unique_id}")
+
+                # Copy extracted fields to data_points
                 for key, value in bank_data.items():
-                    if key != 'unique_id':
-                        data['data_points'][key] = value
+                    if key != 'unique_id' and value:
+                        data_points[key] = value
+                        logger.debug(f"Bank-specific extraction provided value for {key}: {value}")
 
-            # If bank-specific extraction didn't work, try generic patterns
-            if not data['unique_id']:
+        # THIRD PRIORITY: If bank-specific extraction didn't find everything,
+        # use the original field pattern extraction
+        if not unique_id or len(data_points) < 2:  # If we're missing ID or most fields
+            logger.info("Using pattern-based extraction for missing fields")
+
+            # If we still don't have a unique ID, try generic ID patterns
+            if not unique_id:
                 # Define patterns for unique identifier
-                id_patterns = []
+                id_patterns = [
+                    # Claim number patterns with higher priority
+                    r'Policy\s+no.*?Claim\s+number.*?\n.*?(?:\d+/\d+/\d+/\d+)\s+(\d+/\d+/\d+/\d+)',
+                    r'Claim\s+number.*?\n.*?(\d+/\d+/\d+/\d+)',
+                    r'Claim\s+number.*?:\s*([A-Z0-9/-]+)',
+                    r'Claim#\s*[:.]?\s*([A-Z0-9/_-]+)',
+                    r'Claim\s+No\s*[:.]?\s*([A-Z0-9/_-]+)',
 
-                # Only add the generic patterns for non-HSBC documents
-                if not is_hsbc_doc:
-                    id_patterns.extend([
-                        # Claim number patterns with higher priority:
-                        # This pattern expects both Policy no and Claim number on the same row
-                        r'Policy\s+no.*?Claim\s+number.*?\n.*?(?:\d+/\d+/\d+/\d+)\s+(\d+/\d+/\d+/\d+)',
-
-                        # Fallback pattern (less specific):
-                        r'Claim\s+number.*?\n.*?(\d+/\d+/\d+/\d+)',
-
-                        # Regular claim number patterns
-                        r'Claim\s+number.*?:\s*([A-Z0-9/-]+)',
-                        r'Claim#\s*[:.]?\s*([A-Z0-9/_-]+)',
-                        r'Claim\s+No\s*[:.]?\s*([A-Z0-9/_-]+)',
-
-                        # Generic pattern - SHOULD NOT BE USED FOR HSBC DOCUMENTS
-                        r'(\d+/\d+/\d+/\d+)',
-                    ])
-
-                # These patterns are safer for all document types
-                id_patterns.extend([
                     # Specific format patterns
                     r'(\d{10}C\d{8})',  # UNITED format
                     r'(5004\d{10})',  # UNITED format alternate
@@ -678,98 +1338,116 @@ class PDFProcessor:
                     r'Claim(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
                     r'Invoice(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
 
-                    # Other reference patterns - lower priority
+                    # Other reference patterns
                     r'(?:Our|Your)\s+Ref\s*[:.]?\s*([A-Z0-9-_/]+)',
                     r'Policy(?:\s+No\.?|\s*Number|\s*#)(?:[:\s]*|[.\s]*|[:-]\s*)([A-Z0-9-_/]+)',
 
-                    # Last priority - advice reference (only use if nothing else found)
-                    r'Advice\s+reference\s+no\s*[:]\s*([A-Z0-9-_/]+)'
-                ])
+                    # Generic pattern - use with caution for HSBC documents
+                    r'(\d+/\d+/\d+/\d+)',
+
+                    # Invoice patterns for other PDFs
+                    r'2425-\d{5}',
+                    r'Bill\s+No\.?\s*(\d{4}-\d{5})',
+                ]
 
                 # Try to find the unique identifier using patterns
                 for pattern in id_patterns:
                     try:
-                        matches = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                        if matches and matches.group(1):  # Ensure we have a valid group match
-                            potential_id = matches.group(1).strip()
-
-                            # Don't match on just common labels
-                            if potential_id.lower() not in ['invoice', 'claim', 'ref', 'reference']:
-                                # For HSBC documents, skip advice reference if we have a claim number pattern in the text
-                                if is_hsbc_doc and "advice reference" in pattern.lower():
-                                    logger.info(f"Skipping advice reference pattern in HSBC document")
-                                    continue
-
-                                data['unique_id'] = potential_id
-                                logger.debug(f"Found unique ID using pattern {pattern}: {potential_id}")
+                        if '(' in pattern:  # Pattern has a capture group
+                            matches = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                            if matches and matches.group(1):
+                                potential_id = matches.group(1).strip()
+                                # Don't match on just common labels
+                                if potential_id.lower() not in ['invoice', 'claim', 'ref', 'reference']:
+                                    # Skip advice reference for HSBC docs
+                                    if is_hsbc_doc and "advice reference" in pattern.lower():
+                                        continue
+                                    unique_id = potential_id
+                                    logger.debug(f"Found unique ID using pattern: {unique_id}")
+                                    break
+                        else:  # Pattern without capture groups
+                            matches = re.search(pattern, text, re.IGNORECASE)
+                            if matches:
+                                unique_id = matches.group(0).strip()
+                                logger.debug(f"Found unique ID using direct pattern: {unique_id}")
                                 break
-                            else:
-                                logger.info(f"Skipping label-only match: {potential_id}")
                     except (IndexError, AttributeError) as e:
                         logger.warning(f"Error with pattern {pattern}: {str(e)}")
                         continue
 
-        # Define patterns for expected data fields
-        field_patterns = {
-            # Amount fields
-            'receipt_amount': [
-                r'(?:Receipt|Payment|Remittance)\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'Gross\s+Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'[Nn]et\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'(?:Rs\.?|INR)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?!\s*%)',  # Amount with currency symbol
-                # Pattern for OICL ADVICE PDF
-                r'Remittance amount\s*:?\s*INR\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'Amount.*?(\d{6}(?:\.\d{2})?)',
-                # Pattern for UNITED ADVICE PDF
-                r'Invoice Amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ],
+            # Define field patterns for missing data points
+            field_patterns = {
+                # Amount fields (only check if not already found)
+                'receipt_amount': [
+                    r'(?:Receipt|Payment|Remittance)\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Gross\s+Amount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'[Nn]et\s+[Aa]mount\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'(?:Rs\.?|INR)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?!\s*%)',  # Amount with currency symbol
+                    r'Remittance amount\s*:?\s*INR\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Amount.*?(\d{6}(?:\.\d{2})?)',
+                    r'Invoice Amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                ],
 
-            # Date fields
-            'receipt_date': [
-                r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
-                r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
-                r'[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
-                r'[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
-                r'Value\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
-                r'Advice\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
-                # Patterns for OICL ADVICE PDF
-                r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
-                r'Advice\s+sending\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
-                # Patterns for UNITED ADVICE PDF
-                r'Payment\s+Ini\s+Date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-                r'Invoice\s+Date\s*(\d{2}-\d{2}-\d{4})',
-            ],
+                # Date fields
+                'receipt_date': [
+                    r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+                    r'(?:Receipt|Payment|Value)\s+[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+                    r'[Dd]ate\s*[:.]?\s*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})',
+                    r'[Dd]ate\s*[:.]?\s*(\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+                    r'Value\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
+                    r'Advice\s+Date\s*[:-]?\s*(\d{1,2}[-/\.]?\d{1,2}[-/\.]?\d{2,4})',
+                    r'Value\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
+                    r'Advice\s+sending\s+date\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})',
+                    r'Payment\s+Ini\s+Date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                    r'Invoice\s+Date\s*(\d{2}-\d{2}-\d{4})',
+                ],
 
-            # TDS fields
-            'tds': [
-                r'TDS\s+(?:Amount)?\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'(?:Less|Deduction)[:\s]*TDS\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'TDS\s*[:-]?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'Tax\s*(?:Amount)?\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ],
-        }
+                # TDS fields
+                'tds': [
+                    r'TDS\s+(?:Amount)?\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'(?:Less|Deduction)[:\s]*TDS\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'TDS\s*[:-]?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Tax\s*(?:Amount)?\s*[:.]?\s*(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                ],
+            }
 
-        # Extract data points using patterns
-        for field, pattern_list in field_patterns.items():
-            for pattern in pattern_list:
-                matches = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                if matches:
-                    # Only define value if matches is found
-                    if '(' in pattern:
-                        value = matches.group(1).strip()
-                    else:
-                        value = matches.group(0).strip()
+            # Extract data points using patterns only if they're not already set
+            for field, pattern_list in field_patterns.items():
+                if field not in data_points or not data_points[field]:
+                    for pattern in pattern_list:
+                        matches = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                        if matches:
+                            if '(' in pattern:
+                                value = matches.group(1).strip()
+                            else:
+                                value = matches.group(0).strip()
 
-                    # Clean up the value (remove commas from amounts, etc.)
-                    if field == 'receipt_amount' or field == 'tds':
-                        value = re.sub(r'[^0-9.]', '', value)
+                            # Clean up the value
+                            if field == 'receipt_amount' or field == 'tds':
+                                value = re.sub(r'[^0-9.]', '', value)
 
-                    data['data_points'][field] = value
-                    logger.debug(f"Extracted {field}: {value} using pattern: {pattern}")
-                    break  # Use the first successful pattern match for each field
+                            data_points[field] = value
+                            logger.debug(f"Extracted {field}: {value} using pattern")
+                            break
 
-        # Use ML model to enhance extraction (if available)
+        # FOURTH PRIORITY: If still missing fields, try to extract using generic patterns
+        if not unique_id or len(data_points) < 2:
+            logger.info("Using generic pattern extraction for remaining fields")
+            generic_data = self.extract_generic_data(text)
+
+            # Get unique ID if still missing
+            if not unique_id and 'unique_id' in generic_data and generic_data['unique_id']:
+                unique_id = generic_data['unique_id']
+                logger.info(f"Found unique ID using generic extraction: {unique_id}")
+
+            # Fill in missing fields from generic extraction
+            for key, value in generic_data.items():
+                if key != 'unique_id' and value and (key not in data_points or not data_points[key]):
+                    data_points[key] = value
+                    logger.debug(f"Generic extraction provided value for {key}: {value}")
+
+        # FIFTH PRIORITY: Use ML model to enhance extraction if available
         if self.ml_model and self.use_ml:
             try:
                 # Use model to predict additional fields or correct existing ones
@@ -777,47 +1455,49 @@ class PDFProcessor:
 
                 # Update data points with ML predictions where standard patterns failed
                 for field in ml_enhanced_data:
-                    if field not in data['data_points'] or not data['data_points'][field]:
-                        data['data_points'][field] = ml_enhanced_data[field]
+                    if field not in data_points or not data_points[field]:
+                        data_points[field] = ml_enhanced_data[field]
                         logger.debug(f"ML model provided value for {field}: {ml_enhanced_data[field]}")
             except Exception as e:
                 logger.error(f"Error using ML model: {str(e)}")
 
-        # Try to extract data from tables in the PDF
+        # Extract table data which might contain multiple entries
         table_data = self.extract_table_data(text)
 
         # FINAL VALIDATION for HSBC documents
-        # Make a final check to ensure we have the correct claim number
         if is_hsbc_doc and "Policy no" in text and "Claim number" in text:
-            # Look for the specific pattern we're interested in (from a HSBC document)
-            if "270011/11/2025" in text:
-                # Find the complete claim number pattern
-                claim_match = re.search(r'(270011/11/2025/\d+)', text)
-                if claim_match:
-                    correct_claim = claim_match.group(1)
+            # Look for the specific pattern in HSBC documents
+            claim_pattern = r'(\d+/\d+/\d+/\d+)'
+            claim_matches = re.findall(claim_pattern, text)
 
-                    # If we don't have this already, or we have a policy number instead
-                    if data['unique_id'] != correct_claim:
-                        logger.warning(f"Final validation correction: changing {data['unique_id']} to {correct_claim}")
-                        data['unique_id'] = correct_claim
+            if len(claim_matches) >= 2:
+                # For documents with policy/claim numbers in a table
+                policy_no = claim_matches[0]
+                claim_no = claim_matches[1]
+
+                # Check if our unique ID is wrong or missing
+                if not unique_id or unique_id == policy_no:
+                    logger.warning(f"Final validation correction: changing {unique_id} to {claim_no}")
+                    unique_id = claim_no
 
         # Add TDS computation if needed
-        if 'receipt_amount' in data['data_points'] and data['data_points']['receipt_amount'] and \
-                ('tds' not in data['data_points'] or not data['data_points']['tds']):
+        if 'receipt_amount' in data_points and data_points['receipt_amount'] and \
+                ('tds' not in data_points or not data_points['tds']):
             try:
-                amount = float(data['data_points']['receipt_amount'])
+                amount = float(data_points['receipt_amount'])
                 tds, is_computed = self.compute_tds(amount, text)
                 if is_computed:
-                    data['data_points']['tds'] = str(tds)
-                    data['data_points']['tds_computed'] = 'Yes'
+                    data_points['tds'] = str(tds)
+                    data_points['tds_computed'] = 'Yes'
+                    logger.info(f"TDS computed: {data_points['tds']}")
             except Exception as e:
                 logger.error(f"Error computing TDS: {str(e)}")
 
         # Validate extracted data before returning
-        self.validate_extracted_data(data['unique_id'], data['data_points'])
+        self.validate_extracted_data(unique_id, data_points)
 
         # Return the results
-        return data['unique_id'], data['data_points'], table_data
+        return unique_id, data_points, table_data
 
     def validate_extracted_data(self, unique_id, data_points):
         """
@@ -882,29 +1562,21 @@ class PDFProcessor:
         logger.info(
             f"Data validation complete. Unique ID: {unique_id}, Fields: {', '.join(data_points.keys())}")
 
+    # Enhancement 5: Updated extract_table_data to handle more table formats
     def extract_table_data(self, text):
         """
-        Extract data from tables in the PDF.
-        Enhanced with specific patterns for both test PDFs.
-
-        Args:
-            text (str): Extracted text from PDF
-
-        Returns:
-            list: List of dictionaries, each representing a row of data
+        Extract data from tables in the PDF with enhanced pattern recognition.
         """
         table_data = []
 
-        # Look for HSBC/Oriental Insurance table structure
+        # Check for insurance payment advice formats
+        # 1. HSBC/Oriental format table
         if "HSBC" in text or "Oriental Insurance" in text or "claim payment" in text.lower():
-            # Check for the specific table format in HSBC documents
             table_match = re.search(r'Policy\s*no\s+Claim\s*number.*?(\n.*?\d+/\d+/\d+/\d+.*?\d+)', text,
                                     re.IGNORECASE | re.DOTALL)
             if table_match:
-                # Extract the row data
+                # Extract row data
                 row_text = table_match.group(1).strip()
-
-                # Try to extract policy number, claim number, and amount
                 policy_match = re.search(r'(\d+/\d+/\d+/\d+)', row_text)
                 claim_match = re.search(r'\d+/\d+/\d+/\d+\s+(\d+/\d+/\d+/\d+)', row_text)
                 amount_match = re.search(r'(\d+)$', row_text)
@@ -919,167 +1591,129 @@ class PDFProcessor:
                         row_data['receipt_amount'] = amount_match.group(1).strip()
 
                     table_data.append(row_data)
-                    logger.debug(f"Extracted table row: {row_data}")
 
-        # Look for table-like structures in the text
-        # Common patterns in financial documents include tables with claim numbers, dates, and amounts
+        # 2. United India & Other Structured Tables
+        # Look for tables with columns for number, date, amount
+        table_headers = re.search(r'(invoice.*?(?:number|no|date|amount|net|gross).*?(?:tds|tax)?.*?)\n', text,
+                                  re.IGNORECASE)
 
-        # Pattern 1: Try to find tables with claim/invoice numbers followed by dates and amounts
-        table_pattern = r'(?:Claim(?:\s+No\.?|\s*Number|\s*#)|Invoice(?:\s+No\.?|\s*Number|\s*#))\s*.*?\n((?:.*?\d+.*?\n)+)'
-        table_matches = re.findall(table_pattern, text, re.IGNORECASE)
+        if table_headers:
+            headers = table_headers.group(1).lower()
+            header_positions = {}
 
-        for table_text in table_matches:
-            rows = table_text.strip().split('\n')
-            for row in rows:
-                if not row.strip():
+            # Map header positions
+            for header in ["invoice", "claim", "date", "amount", "tds"]:
+                pos = headers.find(header)
+                if pos >= 0:
+                    header_positions[header] = pos
+
+            # Get content after headers
+            content_after_headers = text[table_headers.end():].strip()
+            rows = content_after_headers.split('\n')
+
+            # Process each row based on header positions
+            for row in rows[:20]:  # Limit to first 20 rows for performance
+                if not row.strip() or not any(c.isdigit() for c in row):
                     continue
 
-                # Try to extract data from each row
                 row_data = {}
 
-                # Look for claim/invoice number
-                claim_match = re.search(r'([A-Z0-9-_/]+)', row)
-                if claim_match:
-                    row_data['unique_id'] = claim_match.group(1).strip()
+                # Extract data based on header positions
+                for header, pos in header_positions.items():
+                    if header in ["invoice", "claim"]:
+                        # Look for ID patterns
+                        id_match = re.search(r'(\d{4}-\d{5}|\d{4,19}|[A-Z0-9-_/]+)', row)
+                        if id_match:
+                            row_data['unique_id'] = id_match.group(1).strip()
+                    elif header == "date":
+                        # Look for date patterns
+                        date_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+                                               row)
+                        if date_match:
+                            row_data['receipt_date'] = date_match.group(1).strip()
+                    elif header == "amount":
+                        # Look for amount patterns
+                        amount_match = re.search(r'(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)', row)
+                        if amount_match:
+                            row_data['receipt_amount'] = amount_match.group(1).strip()
+                    elif header == "tds":
+                        # Look for TDS amount
+                        tds_match = re.search(r'(\d+(?:,\d{3})*(?:\.\d{1,2})?)', row)
+                        if tds_match:
+                            row_data['tds'] = tds_match.group(1).strip()
+                            row_data['tds_computed'] = 'No'
 
-                # Look for date
-                date_match = re.search(
-                    r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})', row)
+                # Only add row if it has sufficient data
+                if 'unique_id' in row_data and ('receipt_date' in row_data or 'receipt_amount' in row_data):
+                    table_data.append(row_data)
+
+        # 3. Cera Sanitaryware multi-invoice table
+        if "cera sanitaryware" in text.lower() or "gross amount" in text.lower():
+            # Look for table with Document No., Bill No., Bill Date, Amount, and TDS columns
+            bill_rows = re.findall(
+                r'(\d{10,11})\s+(2425-\d{5})\s+(\d{2}\.\d{2}\.\d{4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})\s+(\d+\.\d{2})',
+                text)
+
+            for row in bill_rows:
+                row_data = {
+                    'unique_id': row[1].strip(),  # Bill No. as unique ID
+                    'document_no': row[0].strip(),
+                    'receipt_date': row[2].strip(),
+                    'gross_amount': row[3].strip(),
+                    'tds': row[4].strip(),
+                    'receipt_amount': row[5].strip(),
+                    'tds_computed': 'No'
+                }
+                table_data.append(row_data)
+
+        # 4. Zion reference table (spotted in sample 34)
+        zion_match = re.search(r'DATE\s+ZION\s+REF\s+NO\.\s+bill\s+no\s+tds\s+amt', text, re.IGNORECASE)
+        if zion_match:
+            # Extract rows in format: DATE | ZION REF NO. | bill no | tds | amt
+            zion_rows = re.findall(r'(\d{1,2}-\d{1,2}-\d{4})\s+(\S+)\s+(2425-\d{5})\s+(\d+)\s+(\d+)', text)
+
+            for row in zion_rows:
+                row_data = {
+                    'unique_id': row[2].strip(),  # Bill No. as unique ID
+                    'receipt_date': row[0].strip(),
+                    'reference_no': row[1].strip(),
+                    'tds': row[3].strip(),
+                    'receipt_amount': row[4].strip(),
+                    'tds_computed': 'No'
+                }
+                table_data.append(row_data)
+
+        # 5. Look for table with invoice numbers and amounts (generic pattern)
+        invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
+        for row in invoice_rows:
+            # Check if this invoice is already in table_data
+            if not any(td.get('unique_id') == row[0].strip() for td in table_data):
+                row_data = {
+                    'unique_id': row[0].strip().replace(' ', '-'),  # Clean up any spacing issues
+                    'receipt_amount': row[1].strip().replace(',', '')
+                }
+
+                # Try to find a date near this invoice
+                context = text[max(0, text.find(row[0]) - 50):min(len(text), text.find(row[0]) + 100)]
+                date_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})', context)
                 if date_match:
                     row_data['receipt_date'] = date_match.group(1).strip()
 
-                # Look for amount
-                amount_match = re.search(r'(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)', row)
-                if amount_match:
-                    row_data['receipt_amount'] = amount_match.group(1).strip()
+                table_data.append(row_data)
 
-                # Look for TDS
-                tds_match = re.search(r'TDS\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)', row, re.IGNORECASE)
-                if tds_match:
-                    row_data['tds'] = tds_match.group(1).strip()
-                    row_data['tds_computed'] = 'No'
+        # 6. Generic pattern for invoice numbers followed by amounts
+        generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
+                                  re.IGNORECASE)
+        for row in generic_rows:
+            # Check if this invoice is already in table_data
+            if not any(td.get('unique_id') == row[0].strip() for td in table_data):
+                row_data = {
+                    'unique_id': row[0].strip(),
+                    'receipt_amount': row[1].strip().replace(',', '')
+                }
+                table_data.append(row_data)
 
-                # Only add the row if we have at least a unique ID and one data point
-                if 'unique_id' in row_data and (
-                        'receipt_date' in row_data or 'receipt_amount' in row_data or 'tds' in row_data):
-                    table_data.append(row_data)
-
-        # Pattern 2: Try to find table with headers and values
-        header_pattern = r'((?:Claim|Invoice).*?(?:Amount|Date).*?(?:TDS|Tax).*?)\n'
-        header_match = re.search(header_pattern, text, re.IGNORECASE)
-
-        if header_match:
-            headers = header_match.group(1).strip()
-
-            # Try to identify column positions based on headers
-            claim_pos = headers.lower().find('claim')
-            invoice_pos = headers.lower().find('invoice')
-            date_pos = headers.lower().find('date')
-            amount_pos = headers.lower().find('amount')
-            tds_pos = headers.lower().find('tds')
-
-            # Get the table content after the header
-            table_content = text[header_match.end():].strip()
-
-            # Split into rows
-            data_rows = table_content.split('\n')
-
-            for row in data_rows:
-                if not row.strip() or not re.search(r'\d+', row):
-                    continue
-
-                row_data = {}
-
-                # Extract data based on column positions
-                if claim_pos >= 0:
-                    # Extract claim number
-                    claim_match = re.search(r'([A-Z0-9-_/]+)', row)
-                    if claim_match:
-                        row_data['unique_id'] = claim_match.group(1).strip()
-
-                if invoice_pos >= 0 and invoice_pos != claim_pos:
-                    # Extract invoice number
-                    invoice_part = row[invoice_pos:].split()[0] if invoice_pos < len(row) else ""
-                    if invoice_part:
-                        row_data['invoice_no'] = invoice_part.strip()
-
-                if date_pos >= 0:
-                    # Extract date
-                    date_match = re.search(
-                        r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
-                        row)
-                    if date_match:
-                        row_data['receipt_date'] = date_match.group(1).strip()
-
-                if amount_pos >= 0:
-                    # Extract amount
-                    amount_match = re.search(r'(?:Rs\.?|INR)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)', row)
-                    if amount_match:
-                        row_data['receipt_amount'] = amount_match.group(1).strip()
-
-                if tds_pos >= 0:
-                    # Extract TDS
-                    tds_part = row[tds_pos:].split()[0] if tds_pos < len(row) else ""
-                    if tds_part and re.match(r'\d', tds_part):
-                        row_data['tds'] = tds_part.strip()
-                        row_data['tds_computed'] = 'No'
-
-                # Only add the row if we have at least a unique ID and one data point
-                if ('unique_id' in row_data or 'invoice_no' in row_data) and (
-                        'receipt_date' in row_data or 'receipt_amount' in row_data or 'tds' in row_data):
-                    table_data.append(row_data)
-
-        # Pattern 3: Look for specific table patterns for OICL ADVICE
-        oicl_table_pattern = r'(Policy\s+no\s*Claim\s+number.*?Amount\s*)'
-        oicl_match = re.search(oicl_table_pattern, text, re.IGNORECASE)
-
-        if oicl_match:
-            # Look for claim number and amount in the table
-            claim_pattern = r'510000/11/\d{4}/\d+'
-            claim_matches = re.findall(claim_pattern, text)
-
-            amount_pattern = r'(\d{6})'
-            amount_matches = re.findall(amount_pattern, text)
-
-            # If we have matching claim and amount, create a row
-            if claim_matches and amount_matches:
-                for claim, amount in zip(claim_matches, amount_matches):
-                    row_data = {
-                        'unique_id': claim,
-                        'receipt_amount': amount
-                    }
-                    # Only add if not already in table_data
-                    if not any(rd.get('unique_id') == claim for rd in table_data):
-                        table_data.append(row_data)
-
-        # Pattern 4: Look for specific table patterns for UNITED ADVICE
-        united_table_pattern = r'(Sr\.No\.\s*Invoice\s*Number.*?Net\s*Amount\s*)'
-        united_match = re.search(united_table_pattern, text, re.IGNORECASE)
-
-        if united_match:
-            # Look for invoice number, date, and amount in the table
-            invoice_pattern = r'(\d{18})'
-            invoice_matches = re.findall(invoice_pattern, text)
-
-            date_pattern = r'(\d{2}-\d{2}-\d{4})'
-            date_matches = re.findall(date_pattern, text)
-
-            amount_pattern = r'(\d{1,3}(?:,\d{3})*\.\d{2})'
-            amount_matches = re.findall(amount_pattern, text)
-
-            # If we have matching invoice, date, and amount, create rows
-            if invoice_matches and date_matches and amount_matches:
-                for i in range(min(len(invoice_matches), len(date_matches), len(amount_matches))):
-                    row_data = {
-                        'unique_id': invoice_matches[i],
-                        'receipt_date': date_matches[i],
-                        'receipt_amount': amount_matches[i].replace(',', '')
-                    }
-                    # Only add if not already in table_data
-                    if not any(rd.get('unique_id') == invoice_matches[i] for rd in table_data):
-                        table_data.append(row_data)
-
-        # Log the extracted table data
+        # Log extracted table data
         if table_data:
             logger.info(f"Extracted {len(table_data)} table rows")
             for i, row in enumerate(table_data):

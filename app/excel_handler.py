@@ -139,7 +139,7 @@ class ExcelHandler:
     def compute_tds(self, amount, text):
         """
         Compute TDS based on the receipt amount and text content.
-        Enhanced to better detect insurance companies with various name formats.
+        Enhanced to detect more insurance companies and improve detection accuracy.
 
         Args:
             amount (float): The receipt amount
@@ -149,77 +149,68 @@ class ExcelHandler:
             tuple: (tds_value, is_computed)
         """
         try:
-            # Check if any of the insurance companies are mentioned in the text
-            insurance_companies = [
-                "national insurance company limited",
-                "united india insurance company limited",
-                "the new india assurance co. ltd",
-                "oriental insurance co ltd",
-                "oriental insurance",
-                "national insurance",
-                "united india insurance",
-                "new india assurance",
-                "oriental insurance",
-                "united india",
-                "new india",
-                "oriental",
-                "0rienta1"
-            ]
-
             # Normalize the text for better matching
             normalized_text = ' '.join(text.lower().split())
-            logger.debug(
-                f"Normalized text for insurance detection (first a few hundred chars): {normalized_text[:300]}...")
 
-            # Check for insurance company with more flexible matching
+            # List of insurance company keywords to check
+            insurance_companies = {
+                "oriental": ["oriental insurance", "oicl", "the oriental insurance co", "oriental", "0rienta1"],
+                "united_india": ["united india insurance", "united india", "uiic"],
+                "new_india": ["new india assurance", "new india", "nia"],
+                "national": ["national insurance", "national", "nic"],
+                "iffco_tokio": ["iffco tokio", "iffco", "itgi"],
+                "tata_aig": ["tata aig", "tataaig", "tag"],
+                "hdfc_ergo": ["hdfc ergo", "hdfc"],
+                "reliance": ["reliance general", "reliance"],
+                "future_generali": ["future generali", "future"],
+                "universal_sompo": ["universal sompo", "usgi"],
+                "liberty": ["liberty videocon", "liberty", "lvgi"],
+                "bajaj_allianz": ["bajaj allianz", "bajaj"],
+                "cholamandalam": ["cholamandalam", "chola"],
+                "royal_sundaram": ["royal sundaram", "royal"],
+                "sbi_general": ["sbi general", "sbi"],
+                "magma_hdi": ["magma hdi", "magma"]
+            }
+
+            # Flag to track if an insurance company is detected
             contains_insurance_company = False
             detected_company = None
 
-            # Check for explicit mention of oriental/national/united insurance (first priority)
-            insurance_keywords = ["oriental", "national", "united india", "new india"]
-            for keyword in insurance_keywords:
-                if keyword in normalized_text and "insurance" in normalized_text:
-                    detected_company = f"{keyword} insurance"
-                    contains_insurance_company = True
-                    logger.info(f"Explicitly detected {keyword} insurance in the text")
+            # Check for insurance company mentions
+            for company_name, keywords in insurance_companies.items():
+                for keyword in keywords:
+                    if keyword in normalized_text:
+                        contains_insurance_company = True
+                        detected_company = company_name
+                        logger.info(f"Detected insurance company: {company_name} (keyword: {keyword})")
+                        break
+                if contains_insurance_company:
                     break
 
-            # If not found, try more specific matches
+            # Additional checks for specific documents
             if not contains_insurance_company:
-                for company in insurance_companies:
-                    # Check for exact match
-                    if company in normalized_text:
+                # Look for standard abbreviations that might indicate insurance companies
+                insurance_abbr = ["icici", "iffco", "hdfc", "tata", "bajaj", "chola", "sbi", "aig", "ergo", "sompo"]
+                for abbr in insurance_abbr:
+                    if abbr in normalized_text:
                         contains_insurance_company = True
-                        detected_company = company
-                        logger.info(f"Detected insurance company: {company}")
+                        detected_company = f"insurance-{abbr}"
+                        logger.info(f"Detected insurance company by abbreviation: {abbr}")
                         break
 
-                    # Check for partial match (key parts of company name)
-                    key_parts = [part for part in company.split() if len(part) > 3 and part != "insurance"]
-                    if key_parts and all(part in normalized_text for part in key_parts):
-                        contains_insurance_company = True
-                        detected_company = company
-                        logger.info(f"Detected insurance company by key parts: {company} (parts: {key_parts})")
-                        break
-
-            # Additional checks for specific PDF types
-            # For HSBC documents, check for insurance company clues
-            if "hsbc" in normalized_text:
-                # Look specifically for mentions of insurance companies in remitter info
-                remitter_info_match = re.search(r'remitter.*?information:.*?(oriental|national|united|new india)',
-                                                normalized_text, re.IGNORECASE | re.DOTALL)
-                if remitter_info_match:
-                    insurance_name = remitter_info_match.group(1).lower()
+                # Check for remitter information that might indicate insurance
+                if "remitter" in normalized_text and any(
+                        kw in normalized_text for kw in ["ins", "assurance", "company", "general"]):
                     contains_insurance_company = True
-                    detected_company = f"{insurance_name} insurance"
-                    logger.info(f"Detected {insurance_name} insurance from HSBC remitter information")
+                    detected_company = "insurance-from-remitter"
+                    logger.info(f"Detected insurance company from remitter information")
 
-            # Apply the appropriate calculation
+            # Apply the appropriate TDS rate based on whether it's an insurance company
             if contains_insurance_company:
-                tds = round(amount * 0.11111111, 2)
+                tds = round(amount * 0.11111111, 2)  # 11.111111% for insurance companies
                 logger.info(f"TDS computed for insurance company ({detected_company}): {tds} (11.111111% of {amount})")
             else:
-                tds = round(amount * 0.09259259, 2)
+                tds = round(amount * 0.09259259, 2)  # 9.259259% for non-insurance companies
                 logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
 
             return tds, True
@@ -231,7 +222,7 @@ class ExcelHandler:
     def find_row_by_identifiers(self, unique_id, data_points, pdf_text=None):
         """
         Find a row in the DataFrame by matching either Invoice No. or Client Ref. No.
-        Enhanced with more robust matching strategies.
+        Enhanced with more robust matching strategies for all PDF types.
         """
         if not unique_id:
             return None
@@ -252,12 +243,29 @@ class ExcelHandler:
             else:
                 numeric_part = None
 
-            # For OICL ADVICE and similar PDFs, extract the last part of claim number
+            # For claim numbers with format like 510000/11/2025/000000, extract various parts
+            claim_parts = None
             claim_last_part = None
+            claim_first_part = None
             if '/' in cleaned_id:
                 claim_parts = cleaned_id.split('/')
                 claim_last_part = claim_parts[-1]
+                claim_first_part = claim_parts[0]
+                logger.info(f"Claim parts: {claim_parts}")
                 logger.info(f"Last part of claim number: {claim_last_part}")
+                logger.info(f"First part of claim number: {claim_first_part}")
+
+            # For invoice numbers with format like 2425-12345, extract parts
+            invoice_parts = None
+            invoice_prefix = None
+            invoice_number = None
+            if '-' in cleaned_id:
+                invoice_parts = cleaned_id.split('-')
+                invoice_prefix = invoice_parts[0]
+                invoice_number = invoice_parts[-1] if len(invoice_parts) > 1 else None
+                logger.info(f"Invoice parts: {invoice_parts}")
+                logger.info(f"Invoice prefix: {invoice_prefix}")
+                logger.info(f"Invoice number: {invoice_number}")
 
             # Create multiple matching strategies
             strategies = [
@@ -276,8 +284,24 @@ class ExcelHandler:
                 lambda col_series: col_series[col_series.str.contains(claim_last_part, na=False)]
                 if claim_last_part else pd.Series(),
 
-                # Strategy 5: For incomplete extractions, try looking for partial matches
+                # Strategy 5: Match first part of ID (for claims starting with specific numbers)
+                lambda col_series: col_series[col_series.str.contains(claim_first_part, na=False)]
+                if claim_first_part and len(claim_first_part) >= 5 else pd.Series(),
+
+                # Strategy 6: Match invoice number part
+                lambda col_series: col_series[col_series.str.contains(invoice_number, na=False)]
+                if invoice_number and len(invoice_number) >= 4 else pd.Series(),
+
+                # Strategy 7: Match invoice prefix (like 2425)
+                lambda col_series: col_series[col_series.str.contains(invoice_prefix, na=False)]
+                if invoice_prefix and len(invoice_prefix) >= 4 else pd.Series(),
+
+                # Strategy 8: For incomplete extractions, try looking for partial matches
                 lambda col_series: col_series[col_series.str.contains(cleaned_id[:6], na=False)]
+                if len(cleaned_id) >= 6 else pd.Series(),
+
+                # Strategy 9: For identifiers that might be truncated/partial
+                lambda col_series: col_series[col_series.str.contains(cleaned_id[-6:], na=False)]
                 if len(cleaned_id) >= 6 else pd.Series(),
             ]
 
@@ -297,20 +321,20 @@ class ExcelHandler:
             # No match found using standard strategies
             logger.warning(f"No match found for ID: {unique_id}")
 
-            # Additional fallback for specific PDF types
+            # Add document-specific fallback strategies for various PDF types
             if pdf_text:
-                # For OICL ADVICE PDF
+                # For OICL ADVICE PDF (Oriental Insurance)
                 if "oriental insurance" in pdf_text.lower() or "hsbc" in pdf_text.lower():
-                    # Look for keywords
-                    if "510000/11/2024" in pdf_text or "2025/000000" in pdf_text:
+                    # Look for specific patterns
+                    if "510000/11/2024" in pdf_text or "510000/11/2025" in pdf_text:
                         # Try to find any row with a similar pattern
                         for column in [self.invoice_column, self.client_ref_column]:
                             if column is not None:
                                 column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains("2024|2025", na=False)]
+                                matches = column_series[column_series.str.contains("510000|2024|2025", na=False)]
                                 if not matches.empty:
                                     index = matches.index[0]
-                                    logger.info(f"Fallback match found in column {column} at row {index}")
+                                    logger.info(f"OICL fallback match found in column {column} at row {index}")
                                     return index
 
                 # For UNITED ADVICE PDF
@@ -320,11 +344,147 @@ class ExcelHandler:
                         for column in [self.invoice_column, self.client_ref_column]:
                             if column is not None:
                                 column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains("5004", na=False)]
+                                matches = column_series[column_series.str.contains("5004|2502", na=False)]
                                 if not matches.empty:
                                     index = matches.index[0]
-                                    logger.info(f"Fallback match found in column {column} at row {index}")
+                                    logger.info(f"United fallback match found in column {column} at row {index}")
                                     return index
+
+                # For HDFC ERGO PDF
+                elif "hdfc ergo" in pdf_text.lower():
+                    # Look for claim number pattern C299924024364-1
+                    claim_pattern = r'C\d+\-\d+'
+                    claim_match = re.search(claim_pattern, pdf_text)
+                    if claim_match:
+                        claim_ref = claim_match.group(0)
+                        # Try to find a row with this pattern
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(claim_ref, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(f"HDFC ERGO fallback match found in column {column} at row {index}")
+                                    return index
+
+                # For Tata AIG PDF
+                elif "tata aig" in pdf_text.lower() or "payment details for" in pdf_text.lower():
+                    # Look for invoice/claim number pattern
+                    invoice_pattern = r'2425\s*\-\s*\d{5}'
+                    invoice_match = re.search(invoice_pattern, pdf_text)
+                    if invoice_match:
+                        invoice_ref = invoice_match.group(0).replace(' ', '')
+                        # Try to find a row with this invoice number
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(f"Tata AIG fallback match found in column {column} at row {index}")
+                                    return index
+
+                # For CERA Sanitaryware PDF
+                elif "cera sanitaryware" in pdf_text.lower():
+                    # Typically contain multiple invoice entries, look for pattern 2425-xxxxx
+                    invoice_pattern = r'2425\-\d{5}'
+                    invoice_matches = re.findall(invoice_pattern, pdf_text)
+                    if invoice_matches:
+                        # Try matching each invoice
+                        for invoice_ref in invoice_matches:
+                            for column in [self.invoice_column, self.client_ref_column]:
+                                if column is not None:
+                                    column_series = self.df[column].astype(str)
+                                    matches = column_series[column_series.str.contains(invoice_ref, na=False)]
+                                    if not matches.empty:
+                                        index = matches.index[0]
+                                        logger.info(f"CERA fallback match found in column {column} at row {index}")
+                                        return index
+
+                # For Liberty Insurance PDF
+                elif "liberty" in pdf_text.lower() or "liber" in pdf_text.lower():
+                    # Try to find the reference number
+                    ref_pattern = r'your\s+reference\s*:\s*(\d+)'
+                    ref_match = re.search(ref_pattern, pdf_text, re.IGNORECASE)
+                    if ref_match:
+                        ref_number = ref_match.group(1)
+                        # Try to find a row with this reference
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(ref_number, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(f"Liberty fallback match found in column {column} at row {index}")
+                                    return index
+
+                # For National Insurance/IFFCO Tokio PDF (Hindi bilingual)
+                elif "national insurance" in pdf_text.lower() or "iffco" in pdf_text.lower():
+                    # Try to extract using sub claim number
+                    sub_claim_pattern = r'sub\s+claim\s+no.*?(\d+\-\d+)'
+                    sub_claim_match = re.search(sub_claim_pattern, pdf_text, re.IGNORECASE | re.DOTALL)
+                    if sub_claim_match:
+                        sub_claim = sub_claim_match.group(1)
+                        # Try to find a row with this sub claim
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(sub_claim, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(
+                                        f"National/IFFCO fallback match found in column {column} at row {index}")
+                                    return index
+
+                # For Reliance/Future Generali/Universal Sompo PDF
+                elif any(insurer in pdf_text.lower() for insurer in ["reliance", "future", "sompo"]):
+                    # Look for invoice reference like 2425-xxxxx
+                    invoice_pattern = r'2425\-\d{5}'
+                    invoice_match = re.search(invoice_pattern, pdf_text)
+                    if invoice_match:
+                        invoice_ref = invoice_match.group(0)
+                        # Try to find a row with this invoice
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(f"Insurer fallback match found in column {column} at row {index}")
+                                    return index
+
+                # For New India Payment Advice (email format)
+                elif "new india" in pdf_text.lower() or "payment of rs" in pdf_text.lower():
+                    # Look for invoice/claim number pattern
+                    invoice_pattern = r'2425\-\d{5}'
+                    invoice_match = re.search(invoice_pattern, pdf_text)
+                    if invoice_match:
+                        invoice_ref = invoice_match.group(0)
+                        # Try to find a row with this invoice
+                        for column in [self.invoice_column, self.client_ref_column]:
+                            if column is not None:
+                                column_series = self.df[column].astype(str)
+                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
+                                if not matches.empty:
+                                    index = matches.index[0]
+                                    logger.info(f"New India fallback match found in column {column} at row {index}")
+                                    return index
+
+            # Final fallback: Try to match using invoice patterns commonly found in PDF files
+            invoice_pattern = r'2425-\d{5}'
+            invoice_matches = re.findall(invoice_pattern, pdf_text) if pdf_text else []
+
+            if invoice_matches:
+                # Try each extracted invoice number
+                for invoice in invoice_matches:
+                    for column in [self.invoice_column, self.client_ref_column]:
+                        if column is not None:
+                            column_series = self.df[column].astype(str)
+                            matches = column_series[column_series.str.contains(invoice, na=False)]
+                            if not matches.empty:
+                                index = matches.index[0]
+                                logger.info(f"Invoice pattern fallback match found in column {column} at row {index}")
+                                return index
 
             return None
 
@@ -335,7 +495,7 @@ class ExcelHandler:
     def update_row_with_data(self, row_index, data_points, pdf_text=None):
         """
         Update a row in the Excel file with extracted data points.
-        Enhanced with improved validation and handling of edge cases.
+        Enhanced with improved validation and handling of edge cases for various formats.
 
         Args:
             row_index (int): Index of the row to update
@@ -385,6 +545,26 @@ class ExcelHandler:
                                     data_points['receipt_amount'] = amount_str
                                     break
 
+                        # For other payment advice PDFs
+                        elif pdf_text:
+                            # Generic patterns to find amounts
+                            amount_patterns = [
+                                r'amount\s*:?\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                                r'remittance\s+amount\s*:?\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                                r'payment\s+amount\s*:?\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                                r'net\s+amount\s*:?\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                                r'rupees\s+.*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                            ]
+
+                            for pattern in amount_patterns:
+                                amount_match = re.search(pattern, pdf_text, re.IGNORECASE)
+                                if amount_match:
+                                    amount_str = amount_match.group(1).replace(',', '')
+                                    logger.info(
+                                        f"Fixed truncated amount using generic pattern: {data_points['receipt_amount']} -> {amount_str}")
+                                    data_points['receipt_amount'] = amount_str
+                                    break
+
                     # Convert to float to ensure it's a valid number
                     amount = float(amount_str)
                     # Format with 2 decimal places
@@ -407,6 +587,8 @@ class ExcelHandler:
                         '%Y/%m/%d',  # 2025/02/12
                         '%d.%m.%Y',  # 12.02.2025
                         '%b %d, %Y',  # Feb 12, 2025
+                        '%d-%b-%Y',  # 12-Feb-2025
+                        '%d/%b/%Y',  # 12/Feb/2025
                     ]
 
                     parsed_date = None
@@ -420,6 +602,7 @@ class ExcelHandler:
                     if parsed_date:
                         # Standardize to dd-mm-yyyy format
                         data_points['receipt_date'] = parsed_date.strftime('%d-%m-%Y')
+                        logger.debug(f"Validated receipt date: {data_points['receipt_date']}")
                     else:
                         logger.warning(f"Could not parse date: {date_str}")
                         failed_fields.append('receipt_date')

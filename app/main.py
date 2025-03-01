@@ -43,13 +43,11 @@ def move_to_appropriate_folder(pdf_path, success, processed_dir, unprocessed_dir
         shutil.copy2(pdf_path, destination)
         return destination
 
-
-# In app/main.py - Update the process_files function
-
+# Process_files function for better multi-PDF handling
 def process_files(excel_path, pdf_folder, progress_callback=None, status_callback=None, debug_mode=False):
     """
     Process PDF files and update Excel with extracted data.
-    Enhanced with improved logging and debugging capabilities.
+    Enhanced with improved logging, debugging, and multi-document handling.
 
     Args:
         excel_path (str): Path to the Excel file
@@ -97,10 +95,28 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
 
     # Initialize processors
     try:
+        # Check for poppler on the system - more paths to try
+        poppler_paths = [
+            "C:\\poppler-24.08.0\\Library\\bin",
+            "C:\\poppler\\bin",
+            "C:\\Program Files\\poppler\\bin",
+            "C:\\Program Files (x86)\\poppler\\bin",
+            "/usr/bin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin"
+        ]
+
+        poppler_path = None
+        for path in poppler_paths:
+            if os.path.exists(path):
+                if os.path.exists(os.path.join(path, "pdfinfo.exe")) or os.path.exists(os.path.join(path, "pdfinfo")):
+                    poppler_path = path
+                    break
+
         pdf_processor = PDFProcessor(
             use_ml=True,
             debug_mode=debug_mode,
-            poppler_path="C:\\poppler-24.08.0\\Library\\bin"  # Update with your poppler path
+            poppler_path=poppler_path
         )
         excel_handler = ExcelHandler(excel_path)
 
@@ -124,7 +140,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                 status_callback(f"Processing file {idx + 1}/{total_files}: {pdf_file}")
 
             try:
-                # Extract data from PDF
+                # Extract text from PDF
                 extracted_text = pdf_processor.extract_text(pdf_path)
 
                 if not extracted_text:
@@ -138,7 +154,14 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     continue
 
                 # Log first 500 chars of extracted text for debugging
-                logger.debug(f"Extracted text sample: {extracted_text[:500000000]}")
+                logger.debug(f"Extracted text sample: {extracted_text[:500]}")
+
+                # If in debug mode, save the full extracted text
+                if debug_mode and debug_dir:
+                    text_path = os.path.join(debug_dir, f"{pdf_file}_extracted_text.txt")
+                    with open(text_path, 'w', encoding='utf-8') as f:
+                        f.write(extracted_text)
+                    logger.debug(f"Saved full extracted text to {text_path}")
 
                 # Extract data points and potential table data
                 unique_id, data_points, table_data = pdf_processor.extract_data_points(extracted_text)
@@ -147,6 +170,17 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                 logger.info(f"Extracted unique ID: {unique_id}")
                 logger.info(f"Extracted data points: {data_points}")
                 logger.info(f"Found {len(table_data)} table rows")
+
+                # If in debug mode, save the extracted data as JSON for analysis
+                if debug_mode and debug_dir:
+                    data_path = os.path.join(debug_dir, f"{pdf_file}_extracted_data.json")
+                    with open(data_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            "unique_id": unique_id,
+                            "data_points": data_points,
+                            "table_data": table_data
+                        }, f, indent=2)
+                    logger.debug(f"Saved extracted data to {data_path}")
 
                 # Case 1: The PDF contains a table with multiple rows of data
                 if table_data and len(table_data) > 0:
@@ -161,8 +195,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             status_callback(
                                 f"✅ Successfully processed {table_results['processed']} of {table_results['total']} rows from {pdf_file}")
 
-                        # Move to processed folder
-                        # Move to appropriate folder
+                        # Move to processed folder if at least one row processed successfully
                         move_to_appropriate_folder(pdf_path, True, processed_dir, unprocessed_dir)
                         results['processed'] += 1
                         results['files']['processed'].append(pdf_file)
@@ -171,7 +204,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             status_callback(f"❌ Failed to process any rows from {pdf_file}")
 
                         # Move to unprocessed folder
-                        shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                        move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                         results['unprocessed'] += 1
                         results['files']['unprocessed'].append(pdf_file)
 
@@ -183,7 +216,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                         status_callback(f"❌ Failed to extract ID from {pdf_file}")
 
                     # Move to unprocessed folder
-                    shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                    move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                     results['unprocessed'] += 1
                     results['files']['unprocessed'].append(pdf_file)
                     continue
@@ -196,7 +229,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                         status_callback(f"❌ Could not find matching row for ID: {unique_id} in {pdf_file}")
 
                     # Move to unprocessed folder
-                    shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                    move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                     results['unprocessed'] += 1
                     results['files']['unprocessed'].append(pdf_file)
                     continue
@@ -211,7 +244,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             f"✅ Successfully updated row for ID: {unique_id} with fields: {', '.join(updated_fields)}")
 
                     # Move to processed folder
-                    shutil.copy2(pdf_path, os.path.join(processed_dir, pdf_file))
+                    move_to_appropriate_folder(pdf_path, True, processed_dir, unprocessed_dir)
                     results['processed'] += 1
                     results['files']['processed'].append(pdf_file)
                 else:
@@ -225,7 +258,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             status_callback(f"❌ Failed to update row for ID: {unique_id}")
 
                     # Move to unprocessed folder since not all fields were updated
-                    shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                    move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                     results['unprocessed'] += 1
                     results['files']['unprocessed'].append(pdf_file)
 
@@ -237,7 +270,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     status_callback(f"❌ Error processing {pdf_file}: {str(e)}")
 
                 # Move to unprocessed folder
-                shutil.copy2(pdf_path, os.path.join(unprocessed_dir, pdf_file))
+                move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
                 results['unprocessed'] += 1
                 results['files']['unprocessed'].append(pdf_file)
 
