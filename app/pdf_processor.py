@@ -161,7 +161,7 @@ class PDFProcessor:
 
     def ocr_process_image(self, img):
         """
-        Runs OCR on a single image with advanced preprocessing.
+        Runs OCR on a single image with preprocessing.
 
         Args:
             img (PIL.Image): The input image
@@ -170,15 +170,7 @@ class PDFProcessor:
             str: Extracted text
         """
         try:
-            # Preprocessing steps
             preprocessed_img = self.preprocess_image(img)
-
-            # Additional image enhancement
-            preprocessed_img = ImageOps.autocontrast(preprocessed_img, cutoff=1)
-            preprocessed_img = ImageEnhance.Sharpness(preprocessed_img).enhance(2.0)
-            preprocessed_img = ImageEnhance.Contrast(preprocessed_img).enhance(1.5)
-
-            # Detect text structure for PSM selection
             selected_psm = self.detect_text_structure(preprocessed_img)
 
             # Save preprocessed image for debugging
@@ -188,27 +180,12 @@ class PDFProcessor:
                 logger.debug(f"Saved preprocessed image: {debug_img_path}")
                 logger.debug(f"Using PSM mode: {selected_psm}")
 
-            # Enhanced custom config for financial documents
-            custom_config = (
-                f'{selected_psm} '
-                '-l eng '
-                '--oem 3 '
-                '--dpi 300 '
-                '-c preserve_interword_spaces=1 '
-                '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., '
-                '-c language_model_penalty_non_dict_word=0.5 '
-                '-c tessedit_do_invert=0 '
-                '-c tessedit_enable_doc_dict=1'
-            )
-
-            # Perform OCR
+            # Custom config for financial documents
+            # custom_config = f'{selected_psm} -l eng --oem 3 -c preserve_interword_spaces=1'
+            custom_config = r'--oem 3 --psm 6 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
             extracted_text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
 
-            # Additional post-processing
-            extracted_text = self.correct_ocr_text(extracted_text)
-
             return extracted_text
-
         except Exception as e:
             logger.error(f"Error in OCR process: {str(e)}")
             return ""
@@ -497,9 +474,6 @@ class PDFProcessor:
             r'\d{19}',  # Long numeric ID
             r'\d{10}[cC]\d{8}',  # Format like 2502002624C050122001
             r'2425-\d{5}',  # Invoice format
-            r'OC-\d{2}-\d{4}-\d{3}-\d+',  # Specific to Bajaj Allianz format
-            r'Claim\s*No\s*[:.]?\s*(OC-\d{2}-\d{4}-\d{3}-\d+)',
-            r'Claim\s*No\s*[:.]?\s*(\d+)',
         ]
 
         # Try to extract unique ID using patterns
@@ -1156,22 +1130,7 @@ class PDFProcessor:
                     data['tds_computed'] = 'No'
                     logger.debug(f"Extracted New India Assurance TDS: {data['tds']}")
 
-        elif detected_provider == "bajaj_allianz":
-            # Extract unique ID patterns
-            unique_id_patterns = [
-                r'(OC-\d{2}-\d{4}-\d{3}-\d+)',  # Matches OC-23-1901-401-301521 format
-                r'Claim\s*No\s*[:.]?\s*(OC-\d{2}-\d{4}-\d{3}-\d+)',
-                r'Claim\s*No\s*[:.]?\s*(\d+)',
-            ]
-
-            for pattern in unique_id_patterns:
-                unique_id_match = re.search(pattern, text, re.IGNORECASE)
-                if unique_id_match:
-                    data['unique_id'] = unique_id_match.group(1).strip()
-                    logger.debug(f"Extracted Bajaj Allianz unique ID: {data['unique_id']}")
-                    break
-
-        elif detected_provider in ["cholamandalam"]:
+        elif detected_provider in ["bajaj_allianz", "cholamandalam"]:
             # Bajaj Allianz/Cholamandalam format
             logger.debug(f"Extracting data using {detected_provider} patterns")
 
@@ -1737,21 +1696,7 @@ class PDFProcessor:
                 }
                 table_data.append(row_data)
 
-        # 5. Special handling for Bajaj Allianz style table
-        bajaj_table_pattern = r'(OC-\d{2}-\d{4}-\d{3}-\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
-        bajaj_matches = re.findall(bajaj_table_pattern, text)
-
-        for match in bajaj_matches:
-            row_data = {
-                'unique_id': match[0],
-                'claim_no': match[1],
-                'gross_amt': match[2],
-                'ser_tax': match[3],
-                'tds_amt': match[4]
-            }
-            table_data.append(row_data)
-
-        # 6. Look for table with invoice numbers and amounts (generic pattern)
+        # 5. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -1769,7 +1714,7 @@ class PDFProcessor:
 
                 table_data.append(row_data)
 
-        # 7. Generic pattern for invoice numbers followed by amounts
+        # 6. Generic pattern for invoice numbers followed by amounts
         generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
                                   re.IGNORECASE)
         for row in generic_rows:
