@@ -136,103 +136,11 @@ class ExcelHandler:
 
         logger.info(f"Created header mapping: {self.header_mapping}")
 
-
-    def compute_tds(self, amount, text):
-        """
-        Compute TDS based on the receipt amount and text content.
-        Enhanced to better detect insurance companies with various name formats.
-
-        Args:
-            amount (float): The receipt amount
-            text (str): The text content from the PDF
-
-        Returns:
-            tuple: (tds_value, is_computed)
-        """
-        try:
-            # Check if any of the insurance companies are mentioned in the text
-            insurance_companies = [
-                "national insurance company limited",
-                "united india insurance company limited",
-                "the new india assurance co. ltd",
-                "oriental insurance co ltd",
-                "oriental insurance",
-                "national insurance",
-                "united india insurance",
-                "new india assurance",
-                "oriental insurance",
-                "united india",
-                "new india",
-                "oriental",
-                "0rienta1"
-            ]
-
-            # Normalize the text for better matching
-            normalized_text = ' '.join(text.lower().split())
-            logger.debug(
-                f"Normalized text for insurance detection (first a few hundred chars): {normalized_text[:300]}...")
-
-            # Check for insurance company with more flexible matching
-            contains_insurance_company = False
-            detected_company = None
-
-            # Check for explicit mention of oriental/national/united insurance (first priority)
-            insurance_keywords = ["oriental", "national", "united india", "new india"]
-            for keyword in insurance_keywords:
-                if keyword in normalized_text and "insurance" in normalized_text:
-                    detected_company = f"{keyword} insurance"
-                    contains_insurance_company = True
-                    logger.info(f"Explicitly detected {keyword} insurance in the text")
-                    break
-
-            # If not found, try more specific matches
-            if not contains_insurance_company:
-                for company in insurance_companies:
-                    # Check for exact match
-                    if company in normalized_text:
-                        contains_insurance_company = True
-                        detected_company = company
-                        logger.info(f"Detected insurance company: {company}")
-                        break
-
-                    # Check for partial match (key parts of company name)
-                    key_parts = [part for part in company.split() if len(part) > 3 and part != "insurance"]
-                    if key_parts and all(part in normalized_text for part in key_parts):
-                        contains_insurance_company = True
-                        detected_company = company
-                        logger.info(f"Detected insurance company by key parts: {company} (parts: {key_parts})")
-                        break
-
-            # Additional checks for specific PDF types
-            # For HSBC documents, check for insurance company clues
-            if "hsbc" in normalized_text:
-                # Look specifically for mentions of insurance companies in remitter info
-                remitter_info_match = re.search(r'remitter.*?information:.*?(oriental|national|united|new india)',
-                                                normalized_text, re.IGNORECASE | re.DOTALL)
-                if remitter_info_match:
-                    insurance_name = remitter_info_match.group(1).lower()
-                    contains_insurance_company = True
-                    detected_company = f"{insurance_name} insurance"
-                    logger.info(f"Detected {insurance_name} insurance from HSBC remitter information")
-
-            # Apply the appropriate calculation
-            if contains_insurance_company:
-                tds = round(amount * 0.11111111, 2)
-                logger.info(f"TDS computed for insurance company ({detected_company}): {tds} (11.111111% of {amount})")
-            else:
-                tds = round(amount * 0.09259259, 2)
-                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
-
-            return tds, True
-
-        except Exception as e:
-            logger.error(f"Error computing TDS: {str(e)}")
-            return 0.0, True
-
     def compute_tds(self, amount, text):
         """
         Compute TDS based on the receipt amount and text content.
         Applies 11.111111% for specific insurance companies and 9.259259% for others.
+        Special handling for New India Assurance with threshold of 300000.
 
         Args:
             amount (float): The receipt amount
@@ -308,9 +216,15 @@ class ExcelHandler:
 
             # Apply the appropriate TDS rate
             if is_specific_insurance:
-                tds = round(amount * 0.11111111, 2)  # 11.111111% for specific insurance companies
-                logger.info(
-                    f"TDS computed for specific insurance company ({detected_company}): {tds} (11.111111% of {amount})")
+                # Special handling for New India Assurance
+                if detected_company == "new_india" and amount <= 300000:
+                    tds = round(amount * 0.09259259, 2)  # 9.259259% for amounts <= 300000
+                    logger.info(
+                        f"TDS computed for New India Assurance (amount <= 300000): {tds} (9.259259% of {amount})")
+                else:
+                    tds = round(amount * 0.11111111, 2)  # 11.111111% for specific insurance companies
+                    logger.info(
+                        f"TDS computed for specific insurance company ({detected_company}): {tds} (11.111111% of {amount})")
             else:
                 tds = round(amount * 0.09259259, 2)  # 9.259259% for all other companies
                 logger.info(f"TDS computed for non-specific company: {tds} (9.259259% of {amount})")
@@ -715,7 +629,8 @@ class ExcelHandler:
                     data_points.pop('receipt_date', None)
 
             # Process and compute TDS if needed
-            if 'receipt_amount' in data_points and data_points['receipt_amount'] and 'tds' not in data_points:
+            # Changed following line from this to below - if 'receipt_amount' in data_points and data_points['receipt_amount'] and 'tds' not in data_points:
+            if 'receipt_amount' in data_points and data_points['receipt_amount']:
                 try:
                     # Clean the amount value and convert to float
                     amount_str = data_points['receipt_amount']

@@ -348,7 +348,8 @@ class PDFProcessor:
             "L055": "LOSS",
             "l055": "loss",
             "A55E550R5": "ASSESSORS",
-            "a55e550r5": "assessors"
+            "a55e550r5": "assessors",
+            "0C":"OC"
         }
 
         for error, correction in corrections.items():
