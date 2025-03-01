@@ -136,10 +136,103 @@ class ExcelHandler:
 
         logger.info(f"Created header mapping: {self.header_mapping}")
 
+
     def compute_tds(self, amount, text):
         """
         Compute TDS based on the receipt amount and text content.
-        Enhanced to detect more insurance companies and improve detection accuracy.
+        Enhanced to better detect insurance companies with various name formats.
+
+        Args:
+            amount (float): The receipt amount
+            text (str): The text content from the PDF
+
+        Returns:
+            tuple: (tds_value, is_computed)
+        """
+        try:
+            # Check if any of the insurance companies are mentioned in the text
+            insurance_companies = [
+                "national insurance company limited",
+                "united india insurance company limited",
+                "the new india assurance co. ltd",
+                "oriental insurance co ltd",
+                "oriental insurance",
+                "national insurance",
+                "united india insurance",
+                "new india assurance",
+                "oriental insurance",
+                "united india",
+                "new india",
+                "oriental",
+                "0rienta1"
+            ]
+
+            # Normalize the text for better matching
+            normalized_text = ' '.join(text.lower().split())
+            logger.debug(
+                f"Normalized text for insurance detection (first a few hundred chars): {normalized_text[:300]}...")
+
+            # Check for insurance company with more flexible matching
+            contains_insurance_company = False
+            detected_company = None
+
+            # Check for explicit mention of oriental/national/united insurance (first priority)
+            insurance_keywords = ["oriental", "national", "united india", "new india"]
+            for keyword in insurance_keywords:
+                if keyword in normalized_text and "insurance" in normalized_text:
+                    detected_company = f"{keyword} insurance"
+                    contains_insurance_company = True
+                    logger.info(f"Explicitly detected {keyword} insurance in the text")
+                    break
+
+            # If not found, try more specific matches
+            if not contains_insurance_company:
+                for company in insurance_companies:
+                    # Check for exact match
+                    if company in normalized_text:
+                        contains_insurance_company = True
+                        detected_company = company
+                        logger.info(f"Detected insurance company: {company}")
+                        break
+
+                    # Check for partial match (key parts of company name)
+                    key_parts = [part for part in company.split() if len(part) > 3 and part != "insurance"]
+                    if key_parts and all(part in normalized_text for part in key_parts):
+                        contains_insurance_company = True
+                        detected_company = company
+                        logger.info(f"Detected insurance company by key parts: {company} (parts: {key_parts})")
+                        break
+
+            # Additional checks for specific PDF types
+            # For HSBC documents, check for insurance company clues
+            if "hsbc" in normalized_text:
+                # Look specifically for mentions of insurance companies in remitter info
+                remitter_info_match = re.search(r'remitter.*?information:.*?(oriental|national|united|new india)',
+                                                normalized_text, re.IGNORECASE | re.DOTALL)
+                if remitter_info_match:
+                    insurance_name = remitter_info_match.group(1).lower()
+                    contains_insurance_company = True
+                    detected_company = f"{insurance_name} insurance"
+                    logger.info(f"Detected {insurance_name} insurance from HSBC remitter information")
+
+            # Apply the appropriate calculation
+            if contains_insurance_company:
+                tds = round(amount * 0.11111111, 2)
+                logger.info(f"TDS computed for insurance company ({detected_company}): {tds} (11.111111% of {amount})")
+            else:
+                tds = round(amount * 0.09259259, 2)
+                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
+
+            return tds, True
+
+        except Exception as e:
+            logger.error(f"Error computing TDS: {str(e)}")
+            return 0.0, True
+
+    def compute_tds(self, amount, text):
+        """
+        Compute TDS based on the receipt amount and text content.
+        Applies 11.111111% for specific insurance companies and 9.259259% for others.
 
         Args:
             amount (float): The receipt amount
@@ -151,67 +244,76 @@ class ExcelHandler:
         try:
             # Normalize the text for better matching
             normalized_text = ' '.join(text.lower().split())
+            logger.debug(f"Normalized text for insurance detection (first 300 chars): {normalized_text[:300]}...")
 
-            # List of insurance company keywords to check
-            insurance_companies = {
-                "oriental": ["oriental insurance", "oicl", "the oriental insurance co", "oriental", "0rienta1"],
-                "united_india": ["united india insurance", "united india", "uiic"],
-                "new_india": ["new india assurance", "new india", "nia"],
-                "national": ["national insurance", "national", "nic"],
-                "iffco_tokio": ["iffco tokio", "iffco", "itgi"],
-                "tata_aig": ["tata aig", "tataaig", "tag"],
-                "hdfc_ergo": ["hdfc ergo", "hdfc"],
-                "reliance": ["reliance general", "reliance"],
-                "future_generali": ["future generali", "future"],
-                "universal_sompo": ["universal sompo", "usgi"],
-                "liberty": ["liberty videocon", "liberty", "lvgi"],
-                "bajaj_allianz": ["bajaj allianz", "bajaj"],
-                "cholamandalam": ["cholamandalam", "chola"],
-                "royal_sundaram": ["royal sundaram", "royal"],
-                "sbi_general": ["sbi general", "sbi"],
-                "magma_hdi": ["magma hdi", "magma"]
+            # Define the specific insurance companies that should get 11.111111% rate
+            specific_insurance_companies = {
+                "oriental": ["oriental insurance", "oicl", "the oriental insurance co", "oriental insurance co",
+                             "oriental", "0rienta1"],
+                "united_india": ["united india insurance", "united india insurance company", "united india"],
+                "new_india": ["new india assurance", "new india assurance co", "new india"],
+                "national": ["national insurance", "national insurance company", "national"]
             }
 
-            # Flag to track if an insurance company is detected
-            contains_insurance_company = False
+            # Flag to track if one of the specific insurance companies is detected
+            is_specific_insurance = False
             detected_company = None
 
-            # Check for insurance company mentions
-            for company_name, keywords in insurance_companies.items():
+            # Check for specific insurance companies with more precise matching
+            for company_name, keywords in specific_insurance_companies.items():
                 for keyword in keywords:
+                    # Use more precise matching to avoid false positives
                     if keyword in normalized_text:
-                        contains_insurance_company = True
-                        detected_company = company_name
-                        logger.info(f"Detected insurance company: {company_name} (keyword: {keyword})")
-                        break
-                if contains_insurance_company:
+                        # For single word keywords, ensure they're not part of other words
+                        if len(keyword.split()) == 1:
+                            # Look for word boundaries or check if it's a complete match
+                            pattern = r'\b' + re.escape(keyword) + r'\b'
+                            if re.search(pattern, normalized_text):
+                                is_specific_insurance = True
+                                detected_company = company_name
+                                logger.info(f"Detected specific insurance company: {company_name} (keyword: {keyword})")
+                                break
+                        else:
+                            # Multi-word keywords are more specific already
+                            is_specific_insurance = True
+                            detected_company = company_name
+                            logger.info(f"Detected specific insurance company: {company_name} (keyword: {keyword})")
+                            break
+                if is_specific_insurance:
                     break
 
-            # Additional checks for specific documents
-            if not contains_insurance_company:
-                # Look for standard abbreviations that might indicate insurance companies
-                insurance_abbr = ["icici", "iffco", "hdfc", "tata", "bajaj", "chola", "sbi", "aig", "ergo", "sompo"]
-                for abbr in insurance_abbr:
-                    if abbr in normalized_text:
-                        contains_insurance_company = True
-                        detected_company = f"insurance-{abbr}"
-                        logger.info(f"Detected insurance company by abbreviation: {abbr}")
-                        break
+            # Special handling for HSBC remitter info
+            if not is_specific_insurance and "hsbc" in normalized_text:
+                remitter_match = re.search(
+                    r'remitter.*?(?:name|information).*?(?:oriental|national|united|new\s+india)',
+                    normalized_text, re.IGNORECASE | re.DOTALL)
+                if remitter_match:
+                    remitter_text = remitter_match.group(0).lower()
+                    # Check which specific company is mentioned
+                    if "oriental" in remitter_text:
+                        is_specific_insurance = True
+                        detected_company = "oriental"
+                    elif "national" in remitter_text:
+                        is_specific_insurance = True
+                        detected_company = "national"
+                    elif "united" in remitter_text:
+                        is_specific_insurance = True
+                        detected_company = "united_india"
+                    elif "new india" in remitter_text:
+                        is_specific_insurance = True
+                        detected_company = "new_india"
 
-                # Check for remitter information that might indicate insurance
-                if "remitter" in normalized_text and any(
-                        kw in normalized_text for kw in ["ins", "assurance", "company", "general"]):
-                    contains_insurance_company = True
-                    detected_company = "insurance-from-remitter"
-                    logger.info(f"Detected insurance company from remitter information")
+                    if is_specific_insurance:
+                        logger.info(f"Detected specific insurance company from HSBC remitter info: {detected_company}")
 
-            # Apply the appropriate TDS rate based on whether it's an insurance company
-            if contains_insurance_company:
-                tds = round(amount * 0.11111111, 2)  # 11.111111% for insurance companies
-                logger.info(f"TDS computed for insurance company ({detected_company}): {tds} (11.111111% of {amount})")
+            # Apply the appropriate TDS rate
+            if is_specific_insurance:
+                tds = round(amount * 0.11111111, 2)  # 11.111111% for specific insurance companies
+                logger.info(
+                    f"TDS computed for specific insurance company ({detected_company}): {tds} (11.111111% of {amount})")
             else:
-                tds = round(amount * 0.09259259, 2)  # 9.259259% for non-insurance companies
-                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
+                tds = round(amount * 0.09259259, 2)  # 9.259259% for all other companies
+                logger.info(f"TDS computed for non-specific company: {tds} (9.259259% of {amount})")
 
             return tds, True
 
@@ -699,13 +801,14 @@ class ExcelHandler:
             logger.error(f"Error updating row {row_index}: {str(e)}")
             return False, [], list(data_points.keys())
 
-    def process_multi_row_data(self, table_data, pdf_text):
+    def process_multi_row_data(self, table_data, pdf_text, global_data_points=None):
         """
         Process data from a table in the PDF where each row might correspond to a different Excel row.
 
         Args:
             table_data (list): List of dictionaries, each containing data for one row
             pdf_text (str): The full PDF text for context and TDS computation
+            global_data_points (dict, optional): Global data points extracted from the PDF
 
         Returns:
             dict: Processing results
@@ -715,6 +818,9 @@ class ExcelHandler:
             'unprocessed': 0,
             'total': len(table_data)
         }
+
+        # Use provided global data points or an empty dict
+        global_data = global_data_points or {}
 
         for row_data in table_data:
             # The row_data should contain at least one identifier (invoice_no or client_ref)
@@ -733,6 +839,13 @@ class ExcelHandler:
                 logger.warning(f"No unique identifier found for row data: {row_data}")
                 results['unprocessed'] += 1
                 continue
+
+            # Copy missing fields from global data points to row_data
+            # This is the critical part - adding fields like receipt_date from the global extraction
+            for key, value in global_data.items():
+                if key not in row_data and key != 'unique_id':
+                    row_data[key] = value
+                    logger.debug(f"Added global field '{key}': {value} to row data for {unique_id}")
 
             # Find the row in Excel
             row_index = self.find_row_by_identifiers(unique_id, row_data, pdf_text)

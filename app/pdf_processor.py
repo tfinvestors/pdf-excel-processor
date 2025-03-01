@@ -336,7 +336,19 @@ class PDFProcessor:
             "UNlTED": "UNITED",
             "UN1TED": "UNITED",
             "lnvoice": "Invoice",
-            "lnv": "Inv"
+            "lnv": "Inv",
+            "TD5": "TDS",
+            "td5": "tds",
+            "5ECT0R": "SECTOR",
+            "5ect0r": "Sector",
+            "IN5URANCE": "INSURANCE",
+            "In5urance": "Insurance",
+            "5URVEY0R5": "SURVEYORS",
+            "5urvey0r5": "Surveyors",
+            "L055": "LOSS",
+            "l055": "loss",
+            "A55E550R5": "ASSESSORS",
+            "a55e550r5": "assessors"
         }
 
         for error, correction in corrections.items():

@@ -154,7 +154,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     continue
 
                 # Log first 500 chars of extracted text for debugging
-                logger.debug(f"Extracted text sample: {extracted_text[:500]}")
+                logger.debug(f"Extracted text sample: {extracted_text[:500000000000]}")
 
                 # If in debug mode, save the full extracted text
                 if debug_mode and debug_dir:
@@ -187,8 +187,10 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     if status_callback:
                         status_callback(f"📊 Found table with {len(table_data)} rows in {pdf_file}")
 
-                    # Process the table data
-                    table_results = excel_handler.process_multi_row_data(table_data, extracted_text)
+                    # Process the table data - pass the extracted data_points
+                    table_results = excel_handler.process_multi_row_data(table_data, extracted_text, data_points)
+
+
 
                     if table_results['processed'] > 0:
                         if status_callback:
