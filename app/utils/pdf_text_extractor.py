@@ -1,0 +1,563 @@
+import os
+import re
+import PyPDF2
+import pdfplumber
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path, convert_from_bytes
+import pytesseract
+import logging
+import tempfile
+import io
+import requests
+import concurrent.futures
+from PIL import Image, ImageEnhance
+import cv2
+import numpy as np
+import time
+
+# Configure logging
+logger = logging.getLogger("pdf_extractor")
+
+# OCR Corrections Dictionary
+OCR_CORRECTIONS = {
+    "0rienta1": "Oriental",
+    "0riental": "Oriental",
+    "0rient": "Orient",
+    "lnsurance": "Insurance",
+    "1nsurance": "Insurance",
+    "lndia": "India",
+    "1ndia": "India",
+    "c1aim": "claim",
+    "pol1cy": "policy",
+    "po1icy": "policy",
+    "c1ient": "client",
+    "rece1pt": "receipt",
+    "remittance": "remittance",
+    "HSBC;": "HSBC",
+    "HS8C": "HSBC",
+    "H5BC": "HSBC",
+    "UNlTED": "UNITED",
+    "UN1TED": "UNITED",
+    "lnvoice": "Invoice",
+    "lnv": "Inv",
+    "TD5": "TDS",
+    "td5": "tds",
+    "5ECT0R": "SECTOR",
+    "5ect0r": "Sector",
+    "IN5URANCE": "INSURANCE",
+    "In5urance": "Insurance",
+    "5URVEY0R5": "SURVEYORS",
+    "5urvey0r5": "Surveyors",
+    "L055": "LOSS",
+    "l055": "loss",
+    "A55E550R5": "ASSESSORS",
+    "a55e550r5": "assessors",
+    "0C": "OC"
+}
+
+
+class PDFTextExtractor:
+    """
+    Unified PDF text extraction class used by both training and production code.
+    This ensures consistent text extraction between model training and inference.
+    """
+
+    def __init__(self, poppler_path=None, debug_mode=False):
+        """
+        Initialize the PDF text extractor.
+
+        Args:
+            poppler_path (str): Path to poppler binaries for pdf2image
+            debug_mode (bool): Enable debug mode for extra logging
+        """
+        self.poppler_path = poppler_path
+        self.debug_mode = debug_mode
+        self.debug_dir = None
+
+        # Set Tesseract path for Windows
+        if os.name == 'nt':  # Windows
+            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+        # Create debug directory if needed
+        if self.debug_mode:
+            self.debug_dir = os.path.join(os.path.expanduser("~"), "Downloads", "PDF_Debug")
+            os.makedirs(self.debug_dir, exist_ok=True)
+            logger.info(f"Debug mode enabled. Outputs will be saved to {self.debug_dir}")
+
+    def extract_from_file(self, pdf_path):
+        """
+        Extract text from a local PDF file.
+
+        Args:
+            pdf_path (str): Path to the PDF file
+
+        Returns:
+            str: Extracted text
+        """
+        if not os.path.exists(pdf_path):
+            logger.error(f"PDF file not found: {pdf_path}")
+            return ""
+
+        try:
+            logger.info(f"Extracting text from PDF file: {pdf_path}")
+
+            # Use the common extraction logic
+            return self._extract_text_from_pdf(
+                pdf_path=pdf_path,
+                pdf_content=None,
+                source_type="file"
+            )
+        except Exception as e:
+            logger.error(f"Error extracting text from PDF file {pdf_path}: {str(e)}")
+            return ""
+
+    def extract_from_url(self, url, timeout=60):
+        """
+        Extract text from a PDF file at the given URL.
+
+        Args:
+            url (str): URL to the PDF file
+            timeout (int): Timeout for URL requests in seconds
+
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Check if it's a Google Drive URL
+            if 'drive.google.com' in url:
+                # Convert sharing URL to direct download URL
+                file_id = None
+
+                # Handle various Google Drive URL formats
+                if '/file/d/' in url:
+                    file_id = url.split('/file/d/')[1].split('/')[0]
+                elif 'id=' in url:
+                    file_id = url.split('id=')[1].split('&')[0]
+                elif '/open?id=' in url:
+                    file_id = url.split('/open?id=')[1].split('&')[0]
+
+                if file_id:
+                    # Direct download URL format
+                    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                else:
+                    logger.error(f"Could not parse Google Drive URL: {url}")
+                    return ""
+            else:
+                direct_url = url
+
+            # Download the PDF with timeout and retry logic
+            max_retries = 3
+            retry_delay = 2
+
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Downloading PDF from {direct_url} (attempt {attempt + 1}/{max_retries})")
+                    response = requests.get(direct_url, timeout=timeout)
+                    if response.status_code == 200:
+                        break
+                    logger.warning(f"Failed to download PDF: Status code {response.status_code}. Retrying...")
+                    time.sleep(retry_delay)
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Request error: {str(e)}. Retrying...")
+                    time.sleep(retry_delay)
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to download PDF after {max_retries} attempts")
+                        return ""
+
+            if response.status_code != 200:
+                logger.error(f"Failed to download PDF: Status code {response.status_code}")
+                return ""
+
+            pdf_content = response.content
+
+            # Use the common extraction logic
+            return self._extract_text_from_pdf(
+                pdf_path=None,
+                pdf_content=pdf_content,
+                source_type="url"
+            )
+
+        except Exception as e:
+            logger.error(f"Error extracting text from PDF URL {url}: {str(e)}")
+            return ""
+
+    def extract_from_bytes(self, pdf_bytes):
+        """
+        Extract text from PDF bytes.
+
+        Args:
+            pdf_bytes (bytes): PDF content as bytes
+
+        Returns:
+            str: Extracted text
+        """
+        try:
+            logger.info("Extracting text from PDF bytes")
+
+            # Use the common extraction logic
+            return self._extract_text_from_pdf(
+                pdf_path=None,
+                pdf_content=pdf_bytes,
+                source_type="bytes"
+            )
+        except Exception as e:
+            logger.error(f"Error extracting text from PDF bytes: {str(e)}")
+            return ""
+
+    def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file"):
+        """
+        Core text extraction logic used by all extraction methods.
+
+        Args:
+            pdf_path (str, optional): Path to the PDF file
+            pdf_content (bytes, optional): PDF content as bytes
+            source_type (str): Source type ('file', 'url', or 'bytes')
+
+        Returns:
+            str: Extracted text
+        """
+        # Extraction results from different methods
+        extraction_methods = []
+
+        # 1. Try PyMuPDF (fitz) extraction - often the best for non-scanned PDFs
+        try:
+            if source_type == "file":
+                with fitz.open(pdf_path) as doc:
+                    text_pymupdf = ""
+                    for page_num, page in enumerate(doc):
+                        text_pymupdf += page.get_text("text") + "\n"
+
+                        # Save images for debugging if enabled
+                        if self.debug_mode and self.debug_dir:
+                            pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                            debug_img_path = os.path.join(
+                                self.debug_dir,
+                                f"{os.path.basename(pdf_path) if pdf_path else 'pdf'}_page{page_num + 1}_pymupdf.png"
+                            )
+                            pix.save(debug_img_path)
+            else:  # url or bytes
+                with fitz.open(stream=pdf_content, filetype="pdf") as doc:
+                    text_pymupdf = ""
+                    for page in doc:
+                        text_pymupdf += page.get_text("text") + "\n"
+
+            extraction_methods.append(("PyMuPDF", text_pymupdf))
+            logger.debug(f"PyMuPDF extraction: {len(text_pymupdf)} characters")
+        except Exception as e:
+            logger.warning(f"PyMuPDF extraction failed: {str(e)}")
+
+        # 2. Try PyPDF2 extraction
+        try:
+            if source_type == "file":
+                with open(pdf_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    text_pypdf2 = ""
+                    for page_num in range(len(pdf_reader.pages)):
+                        page = pdf_reader.pages[page_num]
+                        text_pypdf2 += page.extract_text() + "\n"
+            else:  # url or bytes
+                pdf_file = io.BytesIO(pdf_content)
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                text_pypdf2 = ""
+                for page_num in range(len(pdf_reader.pages)):
+                    page = pdf_reader.pages[page_num]
+                    text_pypdf2 += page.extract_text() + "\n"
+
+            extraction_methods.append(("PyPDF2", text_pypdf2))
+            logger.debug(f"PyPDF2 extraction: {len(text_pypdf2)} characters")
+        except Exception as e:
+            logger.warning(f"PyPDF2 extraction failed: {str(e)}")
+
+        # 3. Try pdfplumber extraction
+        try:
+            if source_type == "file":
+                with pdfplumber.open(pdf_path) as pdf:
+                    text_pdfplumber = ""
+                    for page_num, page in enumerate(pdf.pages):
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_pdfplumber += page_text + "\n"
+
+                            # Save images for debugging if enabled
+                            if self.debug_mode and self.debug_dir:
+                                img = page.to_image()
+                                debug_img_path = os.path.join(
+                                    self.debug_dir,
+                                    f"{os.path.basename(pdf_path) if pdf_path else 'pdf'}_page{page_num + 1}_plumber.png"
+                                )
+                                img.save(debug_img_path)
+            else:  # url or bytes
+                pdf_file = io.BytesIO(pdf_content)
+                with pdfplumber.open(pdf_file) as pdf:
+                    text_pdfplumber = ""
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_pdfplumber += page_text + "\n"
+
+            extraction_methods.append(("pdfplumber", text_pdfplumber))
+            logger.debug(f"pdfplumber extraction: {len(text_pdfplumber)} characters")
+        except Exception as e:
+            logger.warning(f"pdfplumber extraction failed: {str(e)}")
+
+        # 4. Try OCR if direct extraction methods yielded limited text
+        best_text_so_far = max([text for _, text in extraction_methods], key=len, default="")
+        if len(best_text_so_far) < 500:  # Only use OCR if direct methods produced little text
+            logger.info("Standard extraction yielded limited text. Trying OCR...")
+
+            try:
+                if source_type == "file":
+                    text_ocr = self._extract_text_ocr_from_file(pdf_path)
+                else:  # url or bytes
+                    text_ocr = self._extract_text_ocr_from_bytes(pdf_content)
+
+                if text_ocr:
+                    extraction_methods.append(("OCR", text_ocr))
+                    logger.debug(f"OCR extraction: {len(text_ocr)} characters")
+            except Exception as e:
+                logger.warning(f"OCR extraction failed: {str(e)}")
+
+        # Use the best result (longest text)
+        extraction_methods.sort(key=lambda x: len(x[1]), reverse=True)
+
+        if extraction_methods:
+            best_method, best_text = extraction_methods[0]
+            logger.info(f"Best extraction method: {best_method} with {len(best_text)} characters")
+
+            # If the best text is still very short, combine all methods
+            if len(best_text) < 200 and len(extraction_methods) > 1:
+                logger.info("Combining results from all extraction methods")
+                combined_text = "\n\n".join([text for _, text in extraction_methods])
+            else:
+                combined_text = best_text
+
+            # Clean and standardize the text
+            combined_text = self.clean_text(combined_text)
+
+            # Save extracted text for debugging if enabled
+            if self.debug_mode and self.debug_dir:
+                filename = os.path.basename(pdf_path) if pdf_path else "pdf_extraction"
+                debug_text_path = os.path.join(self.debug_dir, f"{filename}_extracted_text.txt")
+                with open(debug_text_path, 'w', encoding='utf-8') as f:
+                    f.write(combined_text)
+                logger.debug(f"Saved extracted text to: {debug_text_path}")
+
+            return combined_text
+        else:
+            logger.error("All text extraction methods failed")
+            return ""
+
+    def _extract_text_ocr_from_file(self, pdf_path):
+        """
+        Extract text from PDF file using OCR.
+
+        Args:
+            pdf_path (str): Path to the PDF file
+
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Convert PDF to images
+            images = convert_from_path(
+                pdf_path,
+                dpi=300,  # Higher DPI for better quality
+                fmt="jpeg",
+                poppler_path=self.poppler_path,
+                thread_count=2
+            )
+
+            # Process images with OCR in parallel
+            return self._process_images_with_ocr(images)
+
+        except Exception as e:
+            logger.error(f"Error in OCR extraction from file: {str(e)}")
+            return ""
+
+    def _extract_text_ocr_from_bytes(self, pdf_content):
+        """
+        Extract text from PDF bytes using OCR.
+
+        Args:
+            pdf_content (bytes): PDF content as bytes
+
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Create a temporary directory for storing images
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Convert PDF to images
+                images = convert_from_bytes(
+                    pdf_content,
+                    output_folder=temp_dir,
+                    dpi=300,  # Higher DPI for better quality
+                    fmt="jpeg",
+                    thread_count=2
+                )
+
+                # Process images with OCR in parallel
+                return self._process_images_with_ocr(images)
+
+        except Exception as e:
+            logger.error(f"Error in OCR extraction from bytes: {str(e)}")
+            return ""
+
+    def _process_images_with_ocr(self, images):
+        """
+        Process images with OCR in parallel.
+
+        Args:
+            images (list): List of PIL.Image objects
+
+        Returns:
+            str: Combined OCR text
+        """
+        # Maximum number of worker threads
+        max_workers = min(4, len(images))
+
+        try:
+            # Process images in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                extracted_texts = list(executor.map(self._ocr_process_image, images))
+
+            # Combine the results
+            combined_text = "\n\n".join([t for t in extracted_texts if t.strip()])
+
+            # Save OCR results for debugging if enabled
+            if self.debug_mode and self.debug_dir:
+                debug_ocr_path = os.path.join(self.debug_dir, "ocr_extraction.txt")
+                with open(debug_ocr_path, 'w', encoding='utf-8') as f:
+                    f.write(combined_text)
+                logger.debug(f"Saved OCR results to: {debug_ocr_path}")
+
+            return combined_text
+
+        except Exception as e:
+            logger.error(f"Error processing images with OCR: {str(e)}")
+            return ""
+
+    def _ocr_process_image(self, img):
+        """
+        Process a single image with OCR.
+
+        Args:
+            img (PIL.Image): Input image
+
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Preprocess the image
+            preprocessed_img = self._preprocess_image(img)
+
+            # Save preprocessed image for debugging if enabled
+            if self.debug_mode and self.debug_dir:
+                debug_img_path = os.path.join(self.debug_dir, f"preprocessed_{id(img)}.png")
+                preprocessed_img.save(debug_img_path)
+                logger.debug(f"Saved preprocessed image: {debug_img_path}")
+
+            # Custom config for financial documents
+            custom_config = r'--oem 3 --psm 6 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
+
+            # Extract text
+            text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
+
+            return text
+        except Exception as e:
+            logger.error(f"Error in OCR processing: {str(e)}")
+            return ""
+
+    def _preprocess_image(self, img):
+        """
+        Enhance image for better OCR accuracy.
+
+        Args:
+            img (PIL.Image): The input image
+
+        Returns:
+            PIL.Image: Enhanced image
+        """
+        try:
+            # Convert to grayscale
+            img = img.convert('L')
+
+            # Apply contrast enhancement
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0)
+
+            # Convert to numpy array for OpenCV operations
+            img_np = np.array(img)
+
+            # Apply noise reduction
+            img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
+
+            # Apply adaptive thresholding for better text extraction
+            img_np = cv2.adaptiveThreshold(
+                img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+
+            # Return as PIL Image
+            return Image.fromarray(img_np)
+        except Exception as e:
+            logger.warning(f"Image preprocessing error: {str(e)}")
+            return img  # Return original image if preprocessing fails
+
+    def clean_text(self, text):
+        """
+        Clean and standardize extracted text.
+
+        Args:
+            text (str): Extracted text
+
+        Returns:
+            str: Cleaned text
+        """
+        if not text:
+            return ""
+
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+
+        # Remove non-printable characters
+        text = ''.join(c for c in text if c.isprintable() or c in ['\n', '\t'])
+
+        # Apply OCR corrections for common misrecognitions
+        for error, correction in OCR_CORRECTIONS.items():
+            text = text.replace(error, correction)
+
+        return text.strip()
+
+
+# Usage example (if run directly)
+if __name__ == "__main__":
+    # Configure logging when run as standalone
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    # Simple command-line interface for testing
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Extract text from PDF files.')
+    parser.add_argument('source', help='PDF file path or URL')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--poppler', help='Path to poppler binaries (for pdf2image)')
+
+    args = parser.parse_args()
+
+    # Create extractor
+    extractor = PDFTextExtractor(poppler_path=args.poppler, debug_mode=args.debug)
+
+    # Extract text
+    if args.source.startswith(('http://', 'https://')):
+        text = extractor.extract_from_url(args.source)
+    else:
+        text = extractor.extract_from_file(args.source)
+
+    # Print first 500 characters of the result
+    print(f"Extracted {len(text)} characters of text.")
+    print("\nPreview of extracted text:")
+    print(text[:500] + "..." if len(text) > 500 else text)

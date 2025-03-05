@@ -5,18 +5,25 @@ import re
 import spacy
 import joblib
 import logging
-import requests
-import io
-import PyPDF2
-import pdfplumber
+import concurrent.futures
 from urllib.parse import urlparse
-from sklearn.model_selection import train_test_split
+from datetime import datetime
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 from pathlib import Path
+import time
+import warnings
+import tqdm
+
+# Import unified PDF text extractor
+from app.utils.pdf_text_extractor import PDFTextExtractor
+
+# Suppress low-level warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configure logging
 logging.basicConfig(
@@ -29,13 +36,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ml_model")
 
+# Known insurance companies for TDS calculation
+INSURANCE_COMPANIES = [
+    "national insurance company limited",
+    "united india insurance company limited",
+    "the new india assurance co. ltd",
+    "oriental insurance co ltd",
+    "hdfc ergo",
+    "tata aig",
+    "iffco tokio",
+    "future generali",
+    "reliance general",
+    "liberty general",
+    "bajaj allianz",
+    "universal sompo",
+    "cholamandalam"
+]
+
 
 class PDFDataExtractor:
     def __init__(self):
         """Initialize the PDF data extractor model."""
-        self.nlp = spacy.load("en_core_web_sm")
+        self.nlp = None
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except:
+            logger.info("Downloading spaCy model...")
+            import subprocess
+            subprocess.call(["python", "-m", "spacy", "download", "en_core_web_sm"])
+            self.nlp = spacy.load("en_core_web_sm")
+
         self.model = None
         self.fields = []
+        self.grid_search = None
+        self.best_params = None
 
         # Create models directory if it doesn't exist
         os.makedirs('models', exist_ok=True)
@@ -55,10 +89,14 @@ class PDFDataExtractor:
         text = re.sub(r'[^\w\s]', ' ', text)
 
         # Process with spaCy to keep only important tokens
-        doc = self.nlp(text)
-        tokens = [token.lemma_ for token in doc if not token.is_stop and not token.is_punct and token.is_alpha]
-
-        return " ".join(tokens)
+        try:
+            doc = self.nlp(text[:1000000])  # Limit text length to avoid memory issues
+            tokens = [token.lemma_ for token in doc if not token.is_stop and not token.is_punct and token.is_alpha]
+            return " ".join(tokens)
+        except Exception as e:
+            logger.warning(f"spaCy processing error: {str(e)}")
+            # Fallback to simple tokenization if spaCy fails
+            return " ".join([word for word in text.split() if len(word) > 2])
 
     def prepare_training_data(self, training_data):
         """
@@ -74,6 +112,7 @@ class PDFDataExtractor:
         self.fields = [col for col in training_data.columns if col not in ['text', 'tds_computed']]
 
         # Preprocess text
+        logger.info("Preprocessing text data...")
         X = training_data['text'].apply(self.preprocess_text)
 
         # Prepare target matrix
@@ -81,9 +120,9 @@ class PDFDataExtractor:
 
         return X, y
 
-    def train_model(self, training_data, test_size=0.2, random_state=42):
+    def train_model_with_grid_search(self, training_data, test_size=0.2, random_state=42):
         """
-        Train the extraction model.
+        Train the extraction model with hyperparameter tuning using GridSearchCV.
 
         Args:
             training_data (pd.DataFrame): DataFrame with 'text' column and target field columns
@@ -93,7 +132,83 @@ class PDFDataExtractor:
         Returns:
             float: Test accuracy score
         """
-        logger.info("Starting model training")
+        logger.info("Starting model training with hyperparameter tuning...")
+
+        # Prepare data
+        X, y = self.prepare_training_data(training_data)
+
+        # Split into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+        # Create pipeline
+        pipeline = Pipeline([
+            ('tfidf', TfidfVectorizer()),
+            ('classifier', MultiOutputClassifier(RandomForestClassifier(random_state=random_state)))
+        ])
+
+        # Define parameter grid
+        param_grid = {
+            'tfidf__max_features': [3000, 5000, 7000],
+            'tfidf__ngram_range': [(1, 1), (1, 2)],
+            'classifier__estimator__n_estimators': [50, 100],
+            'classifier__estimator__max_depth': [None, 10, 20],
+            'classifier__estimator__min_samples_split': [2, 5]
+        }
+
+        # Create GridSearchCV
+        logger.info("Starting GridSearchCV (this may take a while)...")
+        self.grid_search = GridSearchCV(
+            pipeline, param_grid, cv=3, scoring='f1_weighted', verbose=1, n_jobs=-1
+        )
+
+        # Fit the grid search
+        self.grid_search.fit(X_train, y_train)
+
+        # Get best parameters
+        self.best_params = self.grid_search.best_params_
+        logger.info(f"Best parameters: {self.best_params}")
+
+        # Save best model
+        self.model = self.grid_search.best_estimator_
+        best_model_path = os.path.join('models', 'pdf_extractor_model_best.joblib')
+        joblib.dump(self.model, best_model_path)
+        logger.info(f"Best model saved to {best_model_path}")
+
+        # Evaluate on test set
+        y_pred = self.model.predict(X_test)
+        accuracy = accuracy_score(y_test.flatten(), y_pred.flatten())
+        f1 = f1_score(y_test.flatten(), y_pred.flatten(), average='weighted')
+
+        logger.info(f"Model training complete. Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}")
+
+        # Print detailed report
+        for i, field in enumerate(self.fields):
+            logger.info(f"Field: {field}")
+            logger.info(classification_report(y_test[:, i], y_pred[:, i]))
+
+        # Also save just the best parameters for reference
+        params_path = os.path.join('models', 'best_parameters.joblib')
+        joblib.dump(self.best_params, params_path)
+
+        return accuracy
+
+    def train_model(self, training_data, test_size=0.2, random_state=42, use_grid_search=False):
+        """
+        Train the extraction model.
+
+        Args:
+            training_data (pd.DataFrame): DataFrame with 'text' column and target field columns
+            test_size (float): Proportion of data to use for testing
+            random_state (int): Random seed for reproducibility
+            use_grid_search (bool): Whether to use GridSearchCV for hyperparameter tuning
+
+        Returns:
+            float: Test accuracy score
+        """
+        if use_grid_search:
+            return self.train_model_with_grid_search(training_data, test_size, random_state)
+
+        logger.info("Starting model training with default parameters...")
 
         # Prepare data
         X, y = self.prepare_training_data(training_data)
@@ -108,14 +223,15 @@ class PDFDataExtractor:
         ])
 
         # Train the model
-        logger.info("Fitting the model")
+        logger.info("Fitting the model...")
         pipeline.fit(X_train, y_train)
 
         # Evaluate on test set
         y_pred = pipeline.predict(X_test)
         accuracy = accuracy_score(y_test.flatten(), y_pred.flatten())
+        f1 = f1_score(y_test.flatten(), y_pred.flatten(), average='weighted')
 
-        logger.info(f"Model training complete. Accuracy: {accuracy:.4f}")
+        logger.info(f"Model training complete. Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}")
 
         # Print detailed report
         for i, field in enumerate(self.fields):
@@ -130,49 +246,68 @@ class PDFDataExtractor:
 
         return accuracy
 
-    def compute_tds(self, text, amount):
+    def compute_tds(self, text, amount, insurance_company=None):
         """
         Compute TDS based on the logic provided.
 
         Args:
             text (str): The text from the PDF
             amount (float): The receipt amount
+            insurance_company (str, optional): The insurance company name
 
         Returns:
             tuple: (tds_value, is_computed)
         """
         try:
-            # Check if any of the insurance companies are mentioned in the text
-            insurance_companies = [
-                "national insurance company limited",
-                "united india insurance company limited",
-                "the new india assurance co. ltd",
-                "oriental insurance co ltd"
-            ]
+            contains_insurance_company = False
 
-            contains_insurance_company = any(company.lower() in text.lower() for company in insurance_companies)
+            # First check if insurance_company is provided directly
+            if insurance_company:
+                for known_company in INSURANCE_COMPANIES:
+                    if known_company.lower() in insurance_company.lower():
+                        contains_insurance_company = True
+                        logger.info(f"Insurance company identified from metadata: {insurance_company}")
+                        break
+
+            # If not found in metadata, check the text
+            if not contains_insurance_company:
+                contains_insurance_company = any(company.lower() in text.lower() for company in INSURANCE_COMPANIES)
+                if contains_insurance_company:
+                    logger.info("Insurance company identified from text content")
 
             # Apply the appropriate calculation
             if contains_insurance_company:
-                tds = round(amount * 0.11111111, 2)
-                logger.info(f"TDS computed for insurance company: {tds} (11.111111% of {amount})")
+                # Special handling for New India Assurance with threshold
+                if "new india" in text.lower() or (insurance_company and "new india" in insurance_company.lower()):
+                    if amount <= 300000:
+                        tds = round(amount * 0.09259259, 2)  # 9.259259% for <= 300000
+                        logger.info(
+                            f"TDS computed for New India Assurance (amount <= 300000): {tds} (9.259259% of {amount})")
+                    else:
+                        tds = round(amount * 0.11111111, 2)  # 11.111111% for > 300000
+                        logger.info(
+                            f"TDS computed for New India Assurance (amount > 300000): {tds} (11.111111% of {amount})")
+                else:
+                    tds = round(amount * 0.11111111, 2)  # 11.111111% for other insurance companies
+                    logger.info(f"TDS computed for insurance company: {tds} (11.111111% of {amount})")
             else:
-                tds = round(amount * 0.09259259, 2)
+                tds = round(amount * 0.09259259, 2)  # 9.259259% for non-insurance companies
                 logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
 
             return tds, True
 
         except Exception as e:
             logger.error(f"Error computing TDS: {str(e)}")
-            return 0.0, True
+            return 0.0, False
 
-    def predict(self, texts, apply_tds_logic=True):
+    def predict(self, texts, apply_tds_logic=True, insurance_companies=None):
         """
         Predict extraction fields from text and apply TDS computation logic if needed.
 
         Args:
             texts (list): List of text strings to extract from
             apply_tds_logic (bool): Whether to apply TDS computation logic
+            insurance_companies (list, optional): List of insurance company names
 
         Returns:
             list: List of dictionaries with extracted fields
@@ -180,15 +315,25 @@ class PDFDataExtractor:
         if self.model is None:
             try:
                 model_path = os.path.join('models', 'pdf_extractor_model.joblib')
-                self.model = joblib.load(model_path)
-            except:
-                logger.error("No model found. Please train the model first.")
+                if os.path.exists(model_path):
+                    self.model = joblib.load(model_path)
+                else:
+                    best_model_path = os.path.join('models', 'pdf_extractor_model_best.joblib')
+                    if os.path.exists(best_model_path):
+                        self.model = joblib.load(best_model_path)
+                    else:
+                        logger.error("No model found. Please train the model first.")
+                        return []
+            except Exception as e:
+                logger.error(f"Error loading model: {str(e)}")
                 return []
 
         # Preprocess the text
+        logger.info(f"Preprocessing {len(texts)} text samples for prediction...")
         processed_texts = [self.preprocess_text(text) for text in texts]
 
         # Make predictions
+        logger.info("Making predictions...")
         predictions = self.model.predict(processed_texts)
 
         # Convert to list of dictionaries
@@ -203,6 +348,7 @@ class PDFDataExtractor:
                 # Check if TDS should be computed
                 original_text = texts[i]
                 amount_str = result.get('amount', '0')
+                insurance_company = None if insurance_companies is None else insurance_companies[i]
 
                 try:
                     # Remove currency symbols and commas
@@ -213,7 +359,7 @@ class PDFDataExtractor:
 
                     if not model_tds or model_tds == '' or model_tds == '0' or float(
                             re.sub(r'[^\d.]', '', model_tds)) == 0:
-                        computed_tds, is_computed = self.compute_tds(original_text, amount)
+                        computed_tds, is_computed = self.compute_tds(original_text, amount, insurance_company)
                         result['tds'] = str(computed_tds)
                         result['tds_computed'] = 'Yes'
                     else:
@@ -258,8 +404,11 @@ class PDFDataExtractor:
                 if claim_match:
                     row_data['unique_id'] = claim_match.group(1).strip()
 
-                # Look for date
-                date_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})', row)
+                # Look for date with expanded formats
+                date_match = re.search(
+                    r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2}|\d{1,2}\s+[A-Za-z]{3}\s+\d{4})',
+                    row
+                )
                 if date_match:
                     row_data['date'] = date_match.group(1).strip()
 
@@ -318,9 +467,11 @@ class PDFDataExtractor:
                         row_data['invoice_no'] = invoice_part.strip()
 
                 if date_pos >= 0:
-                    # Extract date
-                    date_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
-                                           row)
+                    # Extract date with expanded formats
+                    date_match = re.search(
+                        r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2}|\d{1,2}\s+[A-Za-z]{3}\s+\d{4})',
+                        row
+                    )
                     if date_match:
                         row_data['date'] = date_match.group(1).strip()
 
@@ -361,8 +512,11 @@ class PDFDataExtractor:
                 if claim_match:
                     row_data['unique_id'] = claim_match.group(1).strip()
 
-                # Extract date
-                date_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2})', line)
+                # Extract date with expanded formats
+                date_match = re.search(
+                    r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{2,4}[-/\.]\d{1,2}[-/\.]\d{1,2}|\d{1,2}\s+[A-Za-z]{3}\s+\d{4})',
+                    line
+                )
                 if date_match:
                     row_data['date'] = date_match.group(1).strip()
 
@@ -385,105 +539,44 @@ class PDFDataExtractor:
         return table_data
 
 
-def extract_text_from_pdf_url(url):
+def load_training_data_from_excel(excel_path, use_ocr=True, threads=4):
     """
-    Extract text from a PDF file at the given URL.
-
-    Args:
-        url (str): URL to the PDF file
-
-    Returns:
-        str: Extracted text
-    """
-    try:
-        # Check if it's a Google Drive URL
-        if 'drive.google.com' in url:
-            # Convert sharing URL to direct download URL
-            file_id = None
-
-            # Handle various Google Drive URL formats
-            if '/file/d/' in url:
-                file_id = url.split('/file/d/')[1].split('/')[0]
-            elif 'id=' in url:
-                file_id = url.split('id=')[1].split('&')[0]
-            elif '/open?id=' in url:
-                file_id = url.split('/open?id=')[1].split('&')[0]
-
-            if file_id:
-                # Direct download URL format
-                direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            else:
-                logger.error(f"Could not parse Google Drive URL: {url}")
-                return ""
-        else:
-            direct_url = url
-
-        # Download the PDF
-        response = requests.get(direct_url)
-        if response.status_code != 200:
-            logger.error(f"Failed to download PDF from URL: {url}, Status code: {response.status_code}")
-            return ""
-
-        pdf_content = io.BytesIO(response.content)
-
-        # Extract text using PyPDF2
-        text_pypdf2 = ""
-        try:
-            pdf_reader = PyPDF2.PdfReader(pdf_content)
-            for page_num in range(len(pdf_reader.pages)):
-                text_pypdf2 += pdf_reader.pages[page_num].extract_text() + "\n"
-        except Exception as e:
-            logger.warning(f"PyPDF2 extraction failed: {str(e)}")
-
-        # Reset the BytesIO position
-        pdf_content.seek(0)
-
-        # Extract text using pdfplumber
-        text_pdfplumber = ""
-        try:
-            with pdfplumber.open(pdf_content) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_pdfplumber += page_text + "\n"
-        except Exception as e:
-            logger.warning(f"pdfplumber extraction failed: {str(e)}")
-
-        # Combine the results
-        combined_text = text_pypdf2 + "\n" + text_pdfplumber
-
-        # Clean up the text
-        combined_text = re.sub(r'\s+', ' ', combined_text)
-        combined_text = combined_text.strip()
-
-        return combined_text
-
-    except Exception as e:
-        logger.error(f"Error extracting text from PDF URL {url}: {str(e)}")
-        return ""
-
-
-def load_training_data_from_excel(excel_path):
-    """
-    Load training data from an Excel file and extract text from PDF URLs.
+    Load training data from an Excel file and extract text from PDF URLs with parallel processing.
+    Uses the unified PDFTextExtractor for consistent text extraction.
 
     Args:
         excel_path (str): Path to the Excel file
+        use_ocr (bool): Whether to use OCR for text extraction
+        threads (int): Number of threads for parallel processing
 
     Returns:
         pd.DataFrame: DataFrame with text and target columns
     """
     try:
+        # Check if Excel file exists
+        if not os.path.exists(excel_path):
+            logger.error(f"Excel file not found: {excel_path}")
+            return None
+
         # Read the Excel file
+        logger.info(f"Reading Excel file: {excel_path}")
         df = pd.read_excel(excel_path)
+        logger.info(f"Excel file contains {len(df)} rows")
 
         # Check if the required columns exist
         required_columns = ['Document URL', 'Unique Identifier', 'Receipt Amount', 'Receipt Date', 'TDS',
                             'TDS Computed?']
 
+        # Check for Insurance Company Name column (optional but recommended)
+        has_insurance_column = 'Insurance Company Name' in df.columns
+        if has_insurance_column:
+            logger.info("Insurance Company Name column found in Excel")
+        else:
+            logger.info("Insurance Company Name column not found in Excel (optional)")
+
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
-            logger.error(f"Missing columns in Excel file: {missing_columns}")
+            logger.error(f"Missing required columns in Excel file: {missing_columns}")
             return None
 
         # Create a new DataFrame for the training data
@@ -492,58 +585,122 @@ def load_training_data_from_excel(excel_path):
             'unique_id': [],
             'invoice_no': [],
             'client_ref': [],
+            'insurance_company': [] if has_insurance_column else None,
             'amount': [],
             'date': [],
             'tds': [],
             'tds_computed': []
         }
 
-        # Process each row to extract text and target values
-        total_rows = len(df)
-        for idx, row in df.iterrows():
-            logger.info(f"Processing row {idx + 1}/{total_rows}: {row['Document URL']}")
+        # Remove None values from the dictionary
+        training_data = {k: v for k, v in training_data.items() if v is not None}
 
-            # Extract text from PDF URL
-            pdf_text = extract_text_from_pdf_url(row['Document URL'])
+        # Create a single text extractor instance
+        pdf_extractor = PDFTextExtractor()
 
-            if not pdf_text:
-                logger.warning(f"Could not extract text from PDF: {row['Document URL']}")
-                continue
+        # Define a function to process a single row for parallel execution
+        def process_row(row_data):
+            url = row_data['Document URL']
+            if not url or not isinstance(url, str):
+                logger.warning(f"Invalid URL for row: {row_data}")
+                return None
 
-            # Add the data to the training dataset
-            training_data['text'].append(pdf_text)
-            training_data['unique_id'].append(str(row['Unique Identifier']))
+            try:
+                # Extract text from PDF URL using unified extractor
+                pdf_text = pdf_extractor.extract_from_url(url)
 
-            # Use empty strings for invoice_no and client_ref if not available in Excel
-            training_data['invoice_no'].append("")
-            training_data['client_ref'].append("")
+                if not pdf_text or len(pdf_text.strip()) < 50:  # Minimum text length check
+                    logger.warning(f"Insufficient text extracted from PDF: {url}")
+                    return None
 
-            training_data['amount'].append(str(row['Receipt Amount']))
-            training_data['date'].append(str(row['Receipt Date']))
-            training_data['tds'].append(str(row['TDS']))
-            training_data['tds_computed'].append(str(row['TDS Computed?']))
+                # Create a result dictionary with extracted text and targets
+                result = {
+                    'text': pdf_text,
+                    'unique_id': str(row_data['Unique Identifier']),
+                    'invoice_no': "",  # Not available in Excel
+                    'client_ref': "",  # Not available in Excel
+                    'amount': str(row_data['Receipt Amount']),
+                    'date': str(row_data['Receipt Date']),
+                    'tds': str(row_data['TDS']),
+                    'tds_computed': str(row_data['TDS Computed?'])
+                }
 
-            # Also try to extract table data from the PDF
-            extractor = PDFDataExtractor()
-            table_rows = extractor.extract_table_data(pdf_text)
+                # Add insurance company if available
+                if has_insurance_column:
+                    result['insurance_company'] = str(row_data['Insurance Company Name'])
 
-            if table_rows:
-                logger.info(f"Found {len(table_rows)} table rows in PDF: {row['Document URL']}")
+                # Extract table data to generate additional training examples
+                extractor = PDFDataExtractor()
+                table_rows = extractor.extract_table_data(pdf_text)
 
-                # Add each table row as a separate training example
-                for table_row in table_rows:
-                    # Use values from table row, falling back to the Excel row for missing values
-                    training_data['text'].append(pdf_text)  # Use the same full text
-                    training_data['unique_id'].append(table_row.get('unique_id', str(row['Unique Identifier'])))
-                    training_data['invoice_no'].append(table_row.get('invoice_no', ""))
-                    training_data['client_ref'].append(table_row.get('client_ref', ""))
-                    training_data['amount'].append(table_row.get('amount', str(row['Receipt Amount'])))
-                    training_data['date'].append(table_row.get('date', str(row['Receipt Date'])))
-                    training_data['tds'].append(table_row.get('tds', str(row['TDS'])))
-                    training_data['tds_computed'].append(table_row.get('tds_computed', str(row['TDS Computed?'])))
+                if table_rows:
+                    logger.info(f"Found {len(table_rows)} table rows in PDF: {url}")
 
-        # Create DataFrame from the collected data
+                    # Return main result and additional table rows
+                    additional_results = []
+                    for table_row in table_rows:
+                        table_result = result.copy()
+                        # Update with table values, falling back to the Excel row for missing values
+                        table_result['unique_id'] = table_row.get('unique_id', str(row_data['Unique Identifier']))
+                        table_result['invoice_no'] = table_row.get('invoice_no', "")
+                        table_result['client_ref'] = table_row.get('client_ref', "")
+                        table_result['amount'] = table_row.get('amount', str(row_data['Receipt Amount']))
+                        table_result['date'] = table_row.get('date', str(row_data['Receipt Date']))
+                        table_result['tds'] = table_row.get('tds', str(row_data['TDS']))
+                        table_result['tds_computed'] = table_row.get('tds_computed', str(row_data['TDS Computed?']))
+                        additional_results.append(table_result)
+
+                    return [result] + additional_results
+
+                return [result]
+
+            except Exception as e:
+                logger.error(f"Error processing row with URL {url}: {str(e)}")
+                return None
+
+        # Process each row with progress bar
+        logger.info(f"Processing {len(df)} rows with {threads} threads")
+        all_results = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            # Convert DataFrame rows to dictionaries for easier processing
+            rows = df.to_dict('records')
+
+            # Process rows with progress tracking
+            futures = [executor.submit(process_row, row) for row in rows]
+
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                try:
+                    result = future.result()
+                    if result:
+                        all_results.extend(result)
+                    # Print progress every 10%
+                    if (i + 1) % max(1, len(df) // 10) == 0 or i + 1 == len(df):
+                        logger.info(f"Processed {i + 1}/{len(df)} rows ({(i + 1) / len(df) * 100:.1f}%)")
+                except Exception as e:
+                    logger.error(f"Error in future: {str(e)}")
+
+        logger.info(f"Extracted {len(all_results)} total samples (including table rows)")
+
+        # Convert to DataFrame
+        if not all_results:
+            logger.error("No valid samples found")
+            return None
+
+        # Create DataFrame from all results
+        for result in all_results:
+            for key, value in result.items():
+                if key in training_data:
+                    training_data[key].append(value)
+
+        # Create DataFrame
         training_df = pd.DataFrame(training_data)
+
+        # Remove rows with missing or invalid data
+        original_len = len(training_df)
+        training_df = training_df.dropna(subset=['text', 'unique_id'])
+        if len(training_df) < original_len:
+            logger.warning(f"Removed {original_len - len(training_df)} rows with missing text or unique_id")
 
         # Log the size of the training dataset
         logger.info(f"Created training dataset with {len(training_df)} samples")
@@ -555,18 +712,25 @@ def load_training_data_from_excel(excel_path):
         return None
 
 
-def train_model_with_excel_data(excel_path):
+def train_model_with_excel_data(excel_path, use_ocr=True, use_grid_search=False, threads=4):
     """
     Train a model using data from an Excel file containing PDF URLs and target values.
 
     Args:
         excel_path (str): Path to the Excel file
+        use_ocr (bool): Whether to use OCR for text extraction
+        use_grid_search (bool): Whether to use GridSearchCV for hyperparameter tuning
+        threads (int): Number of threads for parallel processing
 
     Returns:
         PDFDataExtractor: Trained extractor model
     """
+    start_time = time.time()
+    logger.info(f"Starting model training with Excel data: {excel_path}")
+    logger.info(f"OCR enabled: {use_ocr}, Grid search: {use_grid_search}, Threads: {threads}")
+
     # Load training data from Excel
-    training_data = load_training_data_from_excel(excel_path)
+    training_data = load_training_data_from_excel(excel_path, use_ocr=use_ocr, threads=threads)
 
     if training_data is None or len(training_data) == 0:
         logger.error("Failed to load training data or no valid samples found")
@@ -576,35 +740,118 @@ def train_model_with_excel_data(excel_path):
     extractor = PDFDataExtractor()
 
     # Train the model
-    accuracy = extractor.train_model(training_data)
+    logger.info("Training model...")
+    accuracy = extractor.train_model(training_data, use_grid_search=use_grid_search)
 
+    elapsed_time = time.time() - start_time
     logger.info(f"Model trained with accuracy: {accuracy:.4f}")
+    logger.info(f"Total training time: {elapsed_time:.2f} seconds ({elapsed_time / 60:.2f} minutes)")
 
     return extractor
 
 
+def test_model_on_new_pdf(model, pdf_url, use_ocr=True):
+    """
+    Test the trained model on a new PDF.
+
+    Args:
+        model (PDFDataExtractor): Trained model
+        pdf_url (str): URL to the PDF file
+        use_ocr (bool): Whether to use OCR for text extraction
+
+    Returns:
+        dict: Extraction results
+    """
+    logger.info(f"Testing model on PDF: {pdf_url}")
+
+    # Create text extractor
+    pdf_extractor = PDFTextExtractor()
+
+    # Extract text from the PDF using unified extractor
+    text = pdf_extractor.extract_from_url(pdf_url)
+
+    if not text:
+        logger.error(f"Failed to extract text from PDF: {pdf_url}")
+        return None
+
+    # Make predictions
+    predictions = model.predict([text])
+
+    if predictions:
+        result = predictions[0]
+        logger.info("Extraction results:")
+        for field, value in result.items():
+            logger.info(f"  {field}: {value}")
+        return result
+    else:
+        logger.error("Prediction failed.")
+        return None
+
+
 if __name__ == "__main__":
-    # Path to your Excel file with training data
-    excel_path = "path/to/your/training_data.xlsx"
+    print("=" * 80)
+    print(" PDF Data Extraction Model Training")
+    print("=" * 80)
+    print("\nThis script will train a machine learning model to extract data from PDF files.")
+    print("The training data should be provided in an Excel file with the following columns:")
+    print("  - Document URL: URL to the PDF file")
+    print("  - Unique Identifier: Identifier for the document")
+    print("  - Insurance Company Name: Name of the insurance company (optional)")
+    print("  - Receipt Amount: Amount to be extracted")
+    print("  - Receipt Date: Date to be extracted")
+    print("  - TDS: Tax Deducted at Source")
+    print("  - TDS Computed?: Whether TDS was computed")
+    print("\nThe trained model will be saved to models/pdf_extractor_model.joblib")
+
+    # Get Excel file path
+    default_path = "training_data.xlsx"
+    excel_path = input(f"\nEnter the path to your Excel file [{default_path}]: ").strip() or default_path
+
+    # Get OCR option
+    use_ocr = input("Use OCR for scanned PDFs? (y/n) [y]: ").lower().strip() != 'n'
+
+    # Get grid search option
+    use_grid_search = input("Use grid search for hyperparameter tuning? (y/n) [n]: ").lower().strip() == 'y'
+    if use_grid_search:
+        print("\nWARNING: Grid search can take a very long time, especially with many PDFs.")
+        print("You might want to start with a smaller dataset or set use_grid_search=False for initial testing.")
+
+    # Get threads option
+    default_threads = os.cpu_count() or 4
+    try:
+        threads = int(
+            input(f"Number of threads for parallel processing [{default_threads}]: ").strip() or default_threads)
+    except ValueError:
+        threads = default_threads
+
+    print("\nStarting training...")
 
     # Train the model
-    extractor = train_model_with_excel_data(excel_path)
+    extractor = train_model_with_excel_data(
+        excel_path,
+        use_ocr=use_ocr,
+        use_grid_search=use_grid_search,
+        threads=threads
+    )
 
     if extractor:
-        # Test with a new example
-        test_url = "https://drive.google.com/your-test-pdf-url"
-        test_text = extract_text_from_pdf_url(test_url)
+        print("\nModel training completed successfully!")
 
-        if test_text:
-            predictions = extractor.predict([test_text])
+        # Ask if user wants to test the model
+        test_model = input("\nTest the model on a new PDF? (y/n) [n]: ").lower().strip() == 'y'
 
-            if predictions:
-                logger.info("Test Prediction:")
-                for field, value in predictions[0].items():
-                    logger.info(f"{field}: {value}")
+        if test_model:
+            test_url = input("Enter the URL to a test PDF: ").strip()
+            if test_url:
+                test_result = test_model_on_new_pdf(extractor, test_url, use_ocr=use_ocr)
+
+                if test_result:
+                    print("\nExtraction Results:")
+                    for field, value in test_result.items():
+                        print(f"  {field}: {value}")
+                else:
+                    print("\nFailed to extract data from the test PDF.")
             else:
-                logger.error("Prediction failed.")
-        else:
-            logger.error("Failed to extract text from test PDF.")
+                print("No test URL provided.")
     else:
-        logger.error("Failed to train the model.")
+        print("\nModel training failed. Check the logs for details.")

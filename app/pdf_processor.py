@@ -1,22 +1,16 @@
 import os
 import re
-import PyPDF2
-import pdfplumber
-import fitz  # PyMuPDF
-from pdf2image import convert_from_path, convert_from_bytes
-import pytesseract
-import pandas as pd
-import spacy
 import joblib
 import logging
-from pathlib import Path
-import tempfile
-import numpy as np
-import cv2
-from PIL import Image, ImageEnhance, ImageOps
-import concurrent.futures
+import pandas as pd
+import spacy
 from datetime import datetime
+import numpy as np
+import concurrent.futures
 import json
+
+# Import unified PDF text extractor
+from app.utils.pdf_text_extractor import PDFTextExtractor
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +39,12 @@ class PDFProcessor:
         self.debug_dir = None
         self.poppler_path = poppler_path
 
+        # Initialize the unified PDF text extractor
+        self.text_extractor = PDFTextExtractor(
+            poppler_path=self.poppler_path,
+            debug_mode=self.debug_mode
+        )
+
         if self.debug_mode:
             # Create debug directory for visualizations
             self.debug_dir = os.path.join(os.path.expanduser("~"), "Downloads", "PDF_Debug")
@@ -68,10 +68,6 @@ class PDFProcessor:
                 logger.info("ML model loaded successfully")
             except Exception as e:
                 logger.warning(f"Could not load ML model: {str(e)}")
-
-        # Setup pytesseract
-        if os.name == 'nt':  # For Windows
-            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
         # Import field mappings from excel_handler's expected fields
         # These should ideally be in a shared configuration
@@ -101,351 +97,30 @@ class PDFProcessor:
             'ClaimNo', 'Claim_Ref_No', 'CLAIM_REF_NO', 'Invoice Details'
         ]
 
-    def preprocess_image(self, img):
-        """
-        Enhances image for better OCR accuracy with advanced preprocessing.
-
-        Args:
-            img (PIL.Image): The input image
-
-        Returns:
-            PIL.Image: Enhanced image
-        """
-        # Convert to grayscale
-        img = img.convert('L')
-
-        # Apply contrast enhancement
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)
-
-        # Convert to numpy array for OpenCV operations
-        img_np = np.array(img)
-
-        # Apply noise reduction
-        img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)  # Reduced strength from 30 to 20
-
-        # Apply slight Gaussian blur
-        img_np = cv2.GaussianBlur(img_np, (3, 3), 0)
-
-        # Apply Otsu's thresholding (more adaptive than fixed threshold)
-        _, img_np = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Return as PIL Image
-        return Image.fromarray(img_np)
-
-    def detect_text_structure(self, image):
-        """
-        Dynamically selects best OCR mode based on image analysis.
-
-        Args:
-            image (PIL.Image): The input image
-
-        Returns:
-            str: The best PSM mode for Tesseract
-        """
-        try:
-            img_np = np.array(image)
-            edges = cv2.Canny(img_np, 50, 150)
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            num_contours = len(contours)
-
-            if num_contours > 100:  # Multi-column text
-                return "--psm 4"
-            elif num_contours < 20:  # Sparse text
-                return "--psm 11"
-            else:
-                return "--psm 6"
-        except Exception as e:
-            logger.warning(f"Error detecting text structure: {str(e)}")
-            return "--psm 6"  # Default to single block of text
-
-    def ocr_process_image(self, img):
-        """
-        Runs OCR on a single image with preprocessing.
-
-        Args:
-            img (PIL.Image): The input image
-
-        Returns:
-            str: Extracted text
-        """
-        try:
-            preprocessed_img = self.preprocess_image(img)
-            selected_psm = self.detect_text_structure(preprocessed_img)
-
-            # Save preprocessed image for debugging
-            if self.debug_mode and self.debug_dir:
-                debug_img_path = os.path.join(self.debug_dir, f"preprocessed_{id(img)}.png")
-                preprocessed_img.save(debug_img_path)
-                logger.debug(f"Saved preprocessed image: {debug_img_path}")
-                logger.debug(f"Using PSM mode: {selected_psm}")
-
-            # Custom config for financial documents
-            # custom_config = f'{selected_psm} -l eng --oem 3 -c preserve_interword_spaces=1'
-            custom_config = r'--oem 3 --psm 6 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
-            extracted_text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
-
-            return extracted_text
-        except Exception as e:
-            logger.error(f"Error in OCR process: {str(e)}")
-            return ""
-
-    def extract_text_pymupdf(self, pdf_path):
-        """
-        Extract text from PDF using PyMuPDF (fitz).
-
-        Args:
-            pdf_path (str): Path to the PDF file
-
-        Returns:
-            str: Extracted text
-        """
-        text = ""
-        try:
-            with fitz.open(pdf_path) as doc:
-                for page_num, page in enumerate(doc):
-                    page_text = page.get_text("text")
-                    text += page_text + "\n"
-
-                    if self.debug_mode:
-                        logger.debug(f"PyMuPDF extraction - Page {page_num + 1} sample: {page_text[:200]}")
-
-                        # Save page as image for debugging
-                        if self.debug_dir:
-                            pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
-                            debug_img_path = os.path.join(self.debug_dir,
-                                                          f"{os.path.basename(pdf_path)}_page{page_num + 1}_pymupdf.png")
-                            pix.save(debug_img_path)
-                            logger.debug(f"Saved PyMuPDF page image: {debug_img_path}")
-        except Exception as e:
-            logger.error(f"Error using PyMuPDF on {pdf_path}: {str(e)}")
-        return text.strip()
-
-    def extract_text_pypdf2(self, pdf_path):
-        """Extract text from PDF using PyPDF2."""
-        text = ""
-        try:
-            with open(pdf_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    page_text = page.extract_text()
-                    text += page_text + "\n"
-
-                    if self.debug_mode:
-                        logger.debug(f"PyPDF2 extraction - Page {page_num + 1} sample: {page_text[:200]}")
-        except Exception as e:
-            logger.error(f"Error using PyPDF2 on {pdf_path}: {str(e)}")
-        return text.strip()
-
-    def extract_text_pdfplumber(self, pdf_path):
-        """Extract text from PDF using pdfplumber."""
-        text = ""
-        try:
-            with pdfplumber.open(pdf_path) as pdf:
-                for page_num, page in enumerate(pdf.pages):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-
-                        if self.debug_mode:
-                            logger.debug(f"pdfplumber extraction - Page {page_num + 1} sample: {page_text[:200]}")
-
-                            # Save page image for debugging
-                            if self.debug_dir:
-                                img = page.to_image()
-                                debug_img_path = os.path.join(self.debug_dir,
-                                                              f"{os.path.basename(pdf_path)}_page{page_num + 1}_plumber.png")
-                                img.save(debug_img_path)
-                                logger.debug(f"Saved pdfplumber page image: {debug_img_path}")
-        except Exception as e:
-            logger.error(f"Error using pdfplumber on {pdf_path}: {str(e)}")
-        return text.strip()
-
-    def extract_text_ocr(self, pdf_path):
-        """
-        Extract text from PDF using OCR with enhanced preprocessing and multi-threading.
-
-        Args:
-            pdf_path (str): Path to the PDF file
-
-        Returns:
-            str: Extracted text
-        """
-        text = ""
-        try:
-            # Create a temporary directory for storing images
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Convert PDF to images with higher DPI for better OCR
-                images = convert_from_path(
-                    pdf_path,
-                    output_folder=temp_dir,
-                    dpi=350,  # Higher DPI for better quality
-                    poppler_path=self.poppler_path
-                )
-
-                # Log number of pages converted
-                logger.debug(f"Converted PDF to {len(images)} images for OCR")
-
-                # Process images in parallel using multi-threading
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(images))) as executor:
-                    extracted_texts = list(executor.map(self.ocr_process_image, images))
-
-                # Combine the results
-                text = "\n\n".join([t for t in extracted_texts if t.strip()])
-
-                if self.debug_mode and self.debug_dir:
-                    # Save full OCR results to file
-                    debug_ocr_path = os.path.join(self.debug_dir, f"{os.path.basename(pdf_path)}_ocr_full.txt")
-                    with open(debug_ocr_path, 'w', encoding='utf-8') as f:
-                        f.write(text)
-                    logger.debug(f"Saved full OCR results to: {debug_ocr_path}")
-
-        except Exception as e:
-            logger.error(f"Error using OCR on {pdf_path}: {str(e)}")
-            logger.error(f"OCR error details: {str(e)}", exc_info=True)
-        return text.strip()
-
-    def correct_ocr_text(self, text):
-        """
-        Correct common OCR errors using a domain-specific dictionary.
-
-        Args:
-            text (str): OCR-extracted text
-
-        Returns:
-            str: Corrected text
-        """
-        corrections = {
-            "0rienta1": "Oriental",
-            "0riental": "Oriental",
-            "0rient": "Orient",
-            "lnsurance": "Insurance",
-            "1nsurance": "Insurance",
-            "lndia": "India",
-            "1ndia": "India",
-            "c1aim": "claim",
-            "pol1cy": "policy",
-            "po1icy": "policy",
-            "c1ient": "client",
-            "rece1pt": "receipt",
-            "remittance": "remittance",
-            "HSBC;": "HSBC",
-            "HS8C": "HSBC",
-            "H5BC": "HSBC",
-            "UNlTED": "UNITED",
-            "UN1TED": "UNITED",
-            "lnvoice": "Invoice",
-            "lnv": "Inv",
-            "TD5": "TDS",
-            "td5": "tds",
-            "5ECT0R": "SECTOR",
-            "5ect0r": "Sector",
-            "IN5URANCE": "INSURANCE",
-            "In5urance": "Insurance",
-            "5URVEY0R5": "SURVEYORS",
-            "5urvey0r5": "Surveyors",
-            "L055": "LOSS",
-            "l055": "loss",
-            "A55E550R5": "ASSESSORS",
-            "a55e550r5": "assessors",
-            "0C":"OC"
-        }
-
-        for error, correction in corrections.items():
-            text = text.replace(error, correction)
-
-        return text
-
     def extract_text(self, pdf_path):
         """
-        Extract text from PDF using multiple methods and combine results.
-        Uses direct extraction first, falling back to OCR if needed.
+        Extract text from PDF using the unified PDF text extractor.
+
+        Args:
+            pdf_path (str): Path to the PDF file
 
         Returns:
-            str: Combined extracted text
+            str: Extracted text
         """
         logger.info(f"Processing PDF: {pdf_path}")
 
-        # Try direct extraction using PyMuPDF first (fastest method)
-        text_pymupdf = self.extract_text_pymupdf(pdf_path)
-
-        # Log the results
-        logger.debug(f"Text length from PyMuPDF: {len(text_pymupdf)}")
-
-        # If PyMuPDF yields sufficient text, use it directly
-        if len(text_pymupdf) > 100:
-            logger.info("Using PyMuPDF extraction as primary source")
-            combined_text = text_pymupdf
-        else:
-            # Try alternate direct extraction methods
-            text_pypdf2 = self.extract_text_pypdf2(pdf_path)
-            text_pdfplumber = self.extract_text_pdfplumber(pdf_path)
-
-            # Log the lengths of extracted text from each method
-            logger.debug(f"Text length from PyPDF2: {len(text_pypdf2)}")
-            logger.debug(f"Text length from pdfplumber: {len(text_pdfplumber)}")
-
-            # If direct extraction methods yield limited text, use OCR
-            if (len(text_pymupdf) < 100 and len(text_pypdf2) < 100 and len(text_pdfplumber) < 100):
-                logger.info("Standard extraction methods yielded limited text. Switching to OCR.")
-
-                # Use enhanced OCR with preprocessing
-                text_ocr = self.extract_text_ocr(pdf_path)
-                logger.debug(f"Text length from enhanced OCR: {len(text_ocr)}")
-
-                if len(text_ocr) > 0:
-                    combined_text = text_ocr
-
-                    # Also append any text that might contain unique information
-                    # from direct extraction
-                    if len(text_pymupdf) > 50:
-                        combined_text += "\n" + text_pymupdf
-                    if len(text_pypdf2) > 50:
-                        combined_text += "\n" + text_pypdf2
-                    if len(text_pdfplumber) > 50:
-                        combined_text += "\n" + text_pdfplumber
-                else:
-                    # Fallback to the best direct extraction result if OCR fails
-                    logger.warning("OCR failed. Using best direct extraction result.")
-                    combined_text = max([text_pymupdf, text_pypdf2, text_pdfplumber], key=len)
-            else:
-                # Use the best direct extraction result
-                logger.info("Using best direct extraction result.")
-                combined_text = max([text_pymupdf, text_pypdf2, text_pdfplumber], key=len)
-
-        # Clean up the text
-        combined_text = self.clean_text(combined_text)
-
-        # Apply dictionary-based corrections
-        combined_text = self.correct_ocr_text(combined_text)
+        # Use the unified text extractor
+        extracted_text = self.text_extractor.extract_from_file(pdf_path)
 
         # Save combined text for debugging
         if self.debug_mode and self.debug_dir:
             debug_text_path = os.path.join(self.debug_dir, f"{os.path.basename(pdf_path)}_combined_text.txt")
             with open(debug_text_path, 'w', encoding='utf-8') as f:
-                f.write(combined_text)
+                f.write(extracted_text)
             logger.debug(f"Saved combined extracted text: {debug_text_path}")
 
-        return combined_text
+        return extracted_text
 
-    def clean_text(self, text):
-        """Clean up extracted text."""
-        if not text:
-            return ""
-
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-
-        # Remove non-printable characters
-        text = ''.join(c for c in text if c.isprintable() or c in ['\n', '\t'])
-
-        # Fix common OCR errors
-        text = text.replace('l', '1').replace('O', '0').replace('S', '5')
-
-        return text.strip()
-
-    # Add a method for generic pattern extraction
     def extract_generic_data(self, text):
         """
         Extract data using generic patterns when provider-specific patterns fail.
@@ -1575,7 +1250,62 @@ class PDFProcessor:
         logger.info(
             f"Data validation complete. Unique ID: {unique_id}, Fields: {', '.join(data_points.keys())}")
 
-    # Enhancement 5: Updated extract_table_data to handle more table formats
+    def compute_tds(self, amount, text):
+        """
+        Compute TDS based on the logic provided.
+
+        Args:
+            amount (float): The receipt amount
+            text (str): The text from the PDF
+
+        Returns:
+            tuple: (tds_value, is_computed)
+        """
+        try:
+            # Check if any of the insurance companies are mentioned in the text
+            insurance_companies = [
+                "national insurance company limited",
+                "united india insurance company limited",
+                "the new india assurance co. ltd",
+                "oriental insurance co ltd",
+                "hdfc ergo",
+                "tata aig",
+                "iffco tokio",
+                "future generali",
+                "reliance general",
+                "liberty general",
+                "bajaj allianz",
+                "universal sompo",
+                "cholamandalam"
+            ]
+
+            contains_insurance_company = any(company.lower() in text.lower() for company in insurance_companies)
+
+            # Apply the appropriate calculation
+            if contains_insurance_company:
+                # Special handling for New India Assurance with threshold
+                if "new india" in text.lower():
+                    if amount <= 300000:
+                        tds = round(amount * 0.09259259, 2)  # 9.259259% for <= 300000
+                        logger.info(
+                            f"TDS computed for New India Assurance (amount <= 300000): {tds} (9.259259% of {amount})")
+                    else:
+                        tds = round(amount * 0.11111111, 2)  # 11.111111% for > 300000
+                        logger.info(
+                            f"TDS computed for New India Assurance (amount > 300000): {tds} (11.111111% of {amount})")
+                else:
+                    tds = round(amount * 0.11111111, 2)  # 11.111111% for other insurance companies
+                    logger.info(f"TDS computed for insurance company: {tds} (11.111111% of {amount})")
+            else:
+                tds = round(amount * 0.09259259, 2)  # 9.259259% for non-insurance companies
+                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
+
+            return tds, True
+
+        except Exception as e:
+            logger.error(f"Error computing TDS: {str(e)}")
+            return 0.0, True
+
     def extract_table_data(self, text):
         """
         Extract data from tables in the PDF with enhanced pattern recognition.
