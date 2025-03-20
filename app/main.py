@@ -164,7 +164,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     logger.debug(f"Saved full extracted text to {text_path}")
 
                 # Extract data points and potential table data
-                unique_id, data_points, table_data = pdf_processor.extract_data_points(extracted_text)
+                unique_id, data_points, table_data, detected_provider = pdf_processor.extract_data_points(extracted_text)
 
                 # Log extracted data
                 logger.info(f"Extracted unique ID: {unique_id}")
@@ -238,7 +238,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
 
                 # Update Excel row with extracted data
                 success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
-                                                                                            extracted_text)
+                                                                                            extracted_text, detected_provider)
 
                 if success:
                     if status_callback:

@@ -717,35 +717,33 @@ class PDFProcessor:
                     break
 
         elif detected_provider == "universal_sompo":
-            # Universal Sompo format
             logger.debug("Extracting data using Universal Sompo patterns")
 
-            # Extract reference number
-            ref_patterns = [
-                r'client\s+ref\s+no\s*:\s*(\d+)',
-                r'payment\s+ref\.\s+no\.\s*:\s*(\d+)',
-                r'CL\d+',
+            # Look for claim reference in CL format
+            claim_patterns = [
+                r'CL\d{8}',
+                r'Payment\s+Ref\.\s+No\.\s*:\s*(\d{10})',
+                r'Claim\s+number\s*:\s*(\S+)',
             ]
 
-            for pattern in ref_patterns:
-                ref_match = re.search(pattern, text, re.IGNORECASE)
-                if ref_match:
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
                     if '(' in pattern:
-                        data['unique_id'] = ref_match.group(1).strip()
+                        data['unique_id'] = claim_match.group(1).strip()
                     else:
-                        data['unique_id'] = ref_match.group(0).strip()
-                    logger.debug(f"Extracted Universal Sompo reference: {data['unique_id']}")
+                        data['unique_id'] = claim_match.group(0).strip()
+                    logger.debug(f"Extracted Universal Sompo claim reference: {data['unique_id']}")
                     break
 
             # Extract amount
             amount_patterns = [
-                r'amount\s*:\s*([0-9,.]+)',
-                r'(?:Rs\.?|INR)?\s*([0-9,.]+)',
-                r'rupees.*?([0-9,.]+).*?only',
+                r'Amount\s*:\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'INR\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
             ]
 
             for pattern in amount_patterns:
-                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                amount_match = re.search(pattern, text, re.IGNORECASE)
                 if amount_match:
                     data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
                     logger.debug(f"Extracted Universal Sompo amount: {data['receipt_amount']}")
@@ -753,9 +751,8 @@ class PDFProcessor:
 
             # Extract date
             date_patterns = [
-                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
-                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-                r'date\s*:\s*(\d{2}-\d{2}-\d{4})',
+                r'Payment\s+Ini\.\s+Date\s*:\s*(\d{2}-\d{2}-\d{4})',
+                r'Value\s+Date\s*:\s*(\d{2}-\d{2}-\d{4})',
             ]
 
             for pattern in date_patterns:
@@ -822,6 +819,150 @@ class PDFProcessor:
                     data['tds'] = tds_value
                     data['tds_computed'] = 'No'
                     logger.debug(f"Extracted New India Assurance TDS: {data['tds']}")
+
+        elif detected_provider == "icici_lombard":
+            logger.debug("Extracting data using ICICI Lombard patterns")
+
+            # Extract claim reference numbers in ENG format
+            claim_patterns = [
+                r'((?:MAR|FIR|ENG|MSC|LIA)\d{9})',  # Captures all five possible prefixes followed by 9 digits
+                r'CLAIM_REF_NO\s*(\S+)',  # Generic pattern for claim reference
+                r'(?:MAR|FIR|ENG|MSC|LIA)\d{9}',  # Direct match without capture group
+            ]
+
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
+                    data['unique_id'] = claim_match.group(1).strip() if '(' in pattern else claim_match.group(0).strip()
+                    logger.debug(f"Extracted ICICI claim reference: {data['unique_id']}")
+                    break
+
+            # Extract invoice number (LAE format) with dynamic financial year prefix
+            invoice_patterns = [
+                r'LAE\s+Invoice\s+No\s*[:.\s]*\s*(\d{4}-\d{5})',  # Match any 4-digit year prefix
+                r'\d{4}-\d{5}',  # Direct match for any 4-digit prefix followed by dash and 5 digits
+            ]
+
+            for pattern in invoice_patterns:
+                invoice_match = re.search(pattern, text, re.IGNORECASE)
+                if invoice_match:
+                    data['invoice_no'] = invoice_match.group(1).strip() if '(' in pattern else invoice_match.group(
+                        0).strip()
+                    logger.debug(f"Extracted ICICI invoice number: {data['invoice_no']}")
+                    break
+
+            # Extract receipt amount
+            amount_patterns = [
+                r'TRF\s+AMOUNT\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'Invoice\s+Amt\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted ICICI amount: {data['receipt_amount']}")
+                    break
+
+            # Extract receipt date
+            date_patterns = [
+                r'RECEIPT\s+DATE\s*[:.\s]*\s*(\d{2}-\d{2}-\d{4})',
+                r'Bill\s+Date\s*[:.\s]*\s*(\d{1,2}/\d{1,2}/\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    date_str = date_match.group(1).strip()
+                    # Convert to standard format if needed
+                    if '/' in date_str:
+                        parts = date_str.split('/')
+                        if len(parts) == 3:
+                            date_str = f"{parts[0].zfill(2)}-{parts[1].zfill(2)}-{parts[2]}"
+                    data['receipt_date'] = date_str
+                    logger.debug(f"Extracted ICICI date: {data['receipt_date']}")
+                    break
+
+        elif detected_provider == "zion":
+            logger.debug("Extracting data using Zion patterns")
+
+            # Extract reference number from Zion's format
+            ref_patterns = [
+                r'JPB\d+/\d+-\d+',
+                r'ZION\s+REF\s+NO\.\s*(\S+)',
+            ]
+
+            for pattern in ref_patterns:
+                ref_match = re.search(pattern, text, re.IGNORECASE)
+                if ref_match:
+                    if '(' in pattern:
+                        data['unique_id'] = ref_match.group(1).strip()
+                    else:
+                        data['unique_id'] = ref_match.group(0).strip()
+                    logger.debug(f"Extracted Zion reference: {data['unique_id']}")
+                    break
+
+            # Extract bill number (invoice) which is usually in 2425-XXXXX format
+            bill_patterns = [
+                r'bill\s+no\s*[:.\s]*\s*(\d{2}\d{2}-\d{5})',
+                # Match any 4-digit year prefix followed by dash and 5 digits
+                r'\d{4}-\d{5}',  # More generic pattern for any 4-digit prefix
+                r'bill\s+no\s*[:.\s]*\s*([A-Z0-9]{4}-\d{5})',  # Even more flexible to handle alphanumeric prefixes
+            ]
+
+            for pattern in bill_patterns:
+                bill_match = re.search(pattern, text, re.IGNORECASE)
+                if bill_match:
+                    if '(' in pattern:
+                        data['invoice_no'] = bill_match.group(1).strip()
+                    else:
+                        data['invoice_no'] = bill_match.group(0).strip()
+                    # If unique_id not found, use invoice number
+                    if 'unique_id' not in data:
+                        data['unique_id'] = data['invoice_no']
+                    logger.debug(f"Extracted Zion bill number: {data['invoice_no']}")
+                    break
+
+            # Extract amount with Zion specific patterns
+            amount_patterns = [
+                r'Bill\s+Amount\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'amt\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'(\d{4})(?:\s+|\s*)\d+\s+\d+',  # Matches amount pattern in Zion table
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Zion amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date with Zion specific patterns
+            date_patterns = [
+                r'Receipt\s+Date\s*[:.\s]*\s*(\d{2}-\d{2}-\d{4})',
+                r'(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Zion date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS specific to Zion
+            tds_patterns = [
+                r'tds\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'TDS\s+Amount\s*[:.\s]*\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'  # TDS is provided in the document
+                    logger.debug(f"Extracted Zion TDS: {data['tds']}")
+                    break
 
         elif detected_provider in ["bajaj_allianz", "cholamandalam"]:
             # Bajaj Allianz/Cholamandalam format
@@ -1203,7 +1344,7 @@ class PDFProcessor:
         self.validate_extracted_data(unique_id, data_points)
 
         # Return the results
-        return unique_id, data_points, table_data
+        return unique_id, data_points, table_data, detected_provider
 
     def validate_extracted_data(self, unique_id, data_points):
         """
@@ -1245,6 +1386,9 @@ class PDFProcessor:
                     '%Y/%m/%d',  # 2025/02/12
                     '%d.%m.%Y',  # 12.02.2025
                     '%b %d, %Y',  # Feb 12, 2025
+                    '%d-%b-%Y',  # 12-Feb-2025
+                    '%d/%b/%Y',  # 12/Feb/2025
+                    '%d %B %Y',  # 11 February 2025
                 ]
 
                 parsed_date = None
@@ -1268,55 +1412,72 @@ class PDFProcessor:
         logger.info(
             f"Data validation complete. Unique ID: {unique_id}, Fields: {', '.join(data_points.keys())}")
 
+    # In compute_tds method, add company-specific rates
     def compute_tds(self, amount, text):
         """
-        Compute TDS based on the logic provided.
-
-        Args:
-            amount (float): The receipt amount
-            text (str): The text from the PDF
-
-        Returns:
-            tuple: (tds_value, is_computed)
+        Compute TDS based on the provider and amount.
         """
         try:
-            # Check if any of the insurance companies are mentioned in the text
-            insurance_companies = [
-                "national insurance company limited",
-                "united india insurance company limited",
-                "the new india assurance co. ltd",
-                "oriental insurance co ltd",
-                "hdfc ergo",
-                "tata aig",
-                "iffco tokio",
-                "future generali",
-                "reliance general",
-                "liberty general",
-                "bajaj allianz",
-                "universal sompo",
-                "cholamandalam"
-            ]
+            # Normalize the text for better matching
+            normalized_text = ' '.join(text.lower().split())
 
-            contains_insurance_company = any(company.lower() in text.lower() for company in insurance_companies)
+            # Define insurance companies with their TDS rates
+            insurance_rates = {
+                "oriental": 0.11111111,  # 11.111111%
+                "united_india": 0.11111111,  # 11.111111%
+                "new_india": {
+                    "default": 0.11111111,  # 11.111111% for amounts > 300000
+                    "below_threshold": 0.09259259  # 9.259259% for amounts <= 300000
+                },
+                "national": 0.11111111,  # 11.111111%
+                "hdfc_ergo": 0.09259259,  # 9.259259%
+                "icici_lombard": 0.09259259,  # 9.259259%
+                "iffco_tokio": 0.09259259,  # 9.259259%
+                "universal_sompo": 0.09259259,  # 9.259259%
+                "future_generali": 0.09259259,  # 9.259259%
+                "tata_aig": 0.09259259,  # 9.259259%
+                "bajaj_allianz": 0.09259259,  # 9.259259%
+                "liberty": 0.09259259,  # 9.259259%
+                "cholamandalam": 0.09259259,  # 9.259259%
+                "reliance": 0.09259259,  # 9.259259%
+                "zion": 0.09259259,  # 9.259259%
+                "cera": 0.09259259,  # 9.259259%  (for non-insurance)
+            }
 
-            # Apply the appropriate calculation
-            if contains_insurance_company:
-                # Special handling for New India Assurance with threshold
-                if "new india" in text.lower():
+            # Default rate for other companies
+            default_rate = 0.09259259  # 9.259259%
+
+            # Detect company
+            detected_company = None
+            for company, keywords in self.insurance_providers.items():
+                if any(keyword in normalized_text for keyword in keywords):
+                    detected_company = company
+                    logger.info(f"Detected company for TDS computation: {company}")
+                    break
+
+            # Apply appropriate TDS rate
+            if detected_company:
+                if detected_company == "new_india":
+                    # Special handling for New India Assurance with threshold
                     if amount <= 300000:
-                        tds = round(amount * 0.09259259, 2)  # 9.259259% for <= 300000
-                        logger.info(
-                            f"TDS computed for New India Assurance (amount <= 300000): {tds} (9.259259% of {amount})")
+                        tds_rate = insurance_rates["new_india"]["below_threshold"]
+                        logger.info(f"Using below threshold rate for New India: {tds_rate}")
                     else:
-                        tds = round(amount * 0.11111111, 2)  # 11.111111% for > 300000
-                        logger.info(
-                            f"TDS computed for New India Assurance (amount > 300000): {tds} (11.111111% of {amount})")
+                        tds_rate = insurance_rates["new_india"]["default"]
+                        logger.info(f"Using above threshold rate for New India: {tds_rate}")
+                elif detected_company in insurance_rates:
+                    tds_rate = insurance_rates[detected_company]
+                    logger.info(f"Using company-specific rate for {detected_company}: {tds_rate}")
                 else:
-                    tds = round(amount * 0.11111111, 2)  # 11.111111% for other insurance companies
-                    logger.info(f"TDS computed for insurance company: {tds} (11.111111% of {amount})")
+                    tds_rate = default_rate
+                    logger.info(f"Using default rate for {detected_company}: {tds_rate}")
             else:
-                tds = round(amount * 0.09259259, 2)  # 9.259259% for non-insurance companies
-                logger.info(f"TDS computed for non-insurance company: {tds} (9.259259% of {amount})")
+                tds_rate = default_rate
+                logger.info(f"Using default rate (no company detected): {tds_rate}")
+
+            # Calculate TDS
+            tds = round(amount * tds_rate, 2)
+            logger.info(f"Computed TDS: {tds} ({tds_rate * 100}% of {amount})")
 
             return tds, True
 
@@ -1409,7 +1570,7 @@ class PDFProcessor:
                     table_data.append(row_data)
 
         # 3. Cera Sanitaryware multi-invoice table
-        if "cera sanitaryware" in text.lower() or "gross amount" in text.lower():
+        if "cera" in text.lower() or "gross amount" in text.lower():
             # Look for table with Document No., Bill No., Bill Date, Amount, and TDS columns
             bill_rows = re.findall(
                 r'(\d{10,11})\s+(2425-\d{5})\s+(\d{2}\.\d{2}\.\d{4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})\s+(\d+\.\d{2})',
@@ -1427,24 +1588,65 @@ class PDFProcessor:
                 }
                 table_data.append(row_data)
 
-        # 4. Zion reference table (spotted in sample 34)
-        zion_match = re.search(r'DATE\s+ZION\s+REF\s+NO\.\s+bill\s+no\s+tds\s+amt', text, re.IGNORECASE)
-        if zion_match:
-            # Extract rows in format: DATE | ZION REF NO. | bill no | tds | amt
-            zion_rows = re.findall(r'(\d{1,2}-\d{1,2}-\d{4})\s+(\S+)\s+(2425-\d{5})\s+(\d+)\s+(\d+)', text)
+        # 4. ICICI Lombard reference table
+        icici_table_match = re.search(
+            r'CLAIM_REF_NO\s+LAE\s+Invoice\s+No\s+Bill\s+Date\s+Invoice\s+Amt\s+TDS\s+TRF\s+AMOUNT', text,
+            re.IGNORECASE)
+        if icici_table_match:
+            # Extract rows using regex pattern
+            rows = re.findall(
+                r'(ENG\d{9})\s+(2425-\d{5})\s+(\d{2}/\d{2}/\d{4})\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                text)
 
-            for row in zion_rows:
-                row_data = {
-                    'unique_id': row[2].strip(),  # Bill No. as unique ID
-                    'receipt_date': row[0].strip(),
-                    'reference_no': row[1].strip(),
-                    'tds': row[3].strip(),
-                    'receipt_amount': row[4].strip(),
-                    'tds_computed': 'No'
-                }
-                table_data.append(row_data)
+            for row in rows:
+                claim_ref, invoice_no, bill_date, invoice_amt, tds, trf_amount = row
 
-        # 5. Look for table with invoice numbers and amounts (generic pattern)
+                # Convert date format from DD/MM/YYYY to DD-MM-YYYY
+                date_parts = bill_date.split('/')
+                formatted_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}" if len(
+                    date_parts) == 3 else bill_date
+
+                table_data.append({
+                    'unique_id': claim_ref.strip(),
+                    'invoice_no': invoice_no.strip(),
+                    'receipt_date': formatted_date.strip(),
+                    'invoice_amt': invoice_amt.strip().replace(',', ''),
+                    'tds': tds.strip().replace(',', ''),
+                    'receipt_amount': trf_amount.strip().replace(',', ''),
+                    'tds_computed': 'No'  # TDS already present in document
+                })
+
+            logger.info(f"Extracted {len(table_data)} rows from ICICI Lombard table")
+
+        # 5. Zion reference table (spotted in sample 34)
+        zion_table_match = re.search(r'DATE\s+ZION\s+REF\s+NO\.\s+bill\s+no\s+(?:amt|Bill\s+Amount)', text,
+                                     re.IGNORECASE)
+        if zion_table_match:
+            # Find the table content lines
+            table_content = text[zion_table_match.end():]
+            table_end = table_content.find("TOTAL PAID AMT")
+            if table_end > 0:
+                table_content = table_content[:table_end]
+
+            # Extract rows using regex pattern matching
+            rows = re.findall(r'(\d{2}-\d{2}-\d{4})\s+(JPB[\d/\-]+)\s+(2425-\d{5})\s+(\d+)\s+(\d+)\s+(\d+)',
+                              table_content)
+
+            for row in rows:
+                date, ref_no, bill_no, amount, tds, receipt_amount = row
+                table_data.append({
+                    'unique_id': bill_no.strip(),
+                    'reference_no': ref_no.strip(),
+                    'receipt_date': date.strip(),
+                    'bill_amount': amount.strip(),
+                    'tds': tds.strip(),
+                    'receipt_amount': receipt_amount.strip(),
+                    'tds_computed': 'No'  # TDS already present in document
+                })
+
+            logger.info(f"Extracted {len(table_data)} rows from Zion table")
+
+        # 6. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -1462,7 +1664,7 @@ class PDFProcessor:
 
                 table_data.append(row_data)
 
-        # 6. Generic pattern for invoice numbers followed by amounts
+        # 7. Generic pattern for invoice numbers followed by amounts
         generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
                                   re.IGNORECASE)
         for row in generic_rows:
