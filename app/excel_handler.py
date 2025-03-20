@@ -5,6 +5,7 @@ import logging
 import re
 from openpyxl.styles import PatternFill, Font
 from datetime import datetime
+from insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
 
 # Configure logging
 logging.basicConfig(
@@ -136,111 +137,72 @@ class ExcelHandler:
 
         logger.info(f"Created header mapping: {self.header_mapping}")
 
+    from insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
+
     def compute_tds(self, amount, text, detected_provider=None):
         """
         Compute TDS based on the receipt amount and text content.
         Applies 11.111111% for specific insurance companies and 9.259259% for others.
         Special handling for New India Assurance with threshold of 300000.
-
-        Args:
-            amount (float): The receipt amount
-            text (str): The text content from the PDF
-            detected_provider (str, optional): The insurance provider already detected
-
-        Returns:
-            tuple: (tds_value, is_computed)
         """
         try:
-            # Normalize the text for better matching
+            # Normalize text for better matching
             normalized_text = ' '.join(text.lower().split())
             logger.debug(f"Normalized text for insurance detection (first 300 chars): {normalized_text[:300]}...")
 
-            # Flag to track if one of the specific insurance companies is detected
-            is_specific_insurance = False
-            detected_company = None
-
-            # If a provider was already detected, use it directly
+            # Use already detected provider if available
             if detected_provider:
                 logger.info(f"Using previously detected insurance provider: {detected_provider}")
 
-                # Map the detected provider to our specific insurance company names
-                if detected_provider in ["oriental", "united_india", "new_india", "national"]:
-                    is_specific_insurance = True
-                    detected_company = detected_provider
-                    logger.info(f"Using previously detected specific insurance company: {detected_company}")
-            else:
-                # Define the specific insurance companies that should get 11.111111% rate
-                specific_insurance_companies = {
-                    "oriental": ["oriental insurance", "oicl", "the oriental insurance co", "oriental insurance co",
-                                 "oriental", "0rienta1"],
-                    "united_india": ["united india insurance", "united india insurance company", "united india"],
-                    "new_india": ["new india assurance", "new india assurance co", "new india"],
-                    "national": ["national insurance", "national insurance company", "national"]
-                }
-
-                # Check for specific insurance companies with more precise matching
-                for company_name, keywords in specific_insurance_companies.items():
-                    for keyword in keywords:
-                        # Use more precise matching to avoid false positives
-                        if keyword in normalized_text:
-                            # For single word keywords, ensure they're not part of other words
-                            if len(keyword.split()) == 1:
-                                # Look for word boundaries or check if it's a complete match
-                                pattern = r'\b' + re.escape(keyword) + r'\b'
-                                if re.search(pattern, normalized_text):
-                                    is_specific_insurance = True
-                                    detected_company = company_name
-                                    logger.info(
-                                        f"Detected specific insurance company: {company_name} (keyword: {keyword})")
-                                    break
-                            else:
-                                # Multi-word keywords are more specific already
-                                is_specific_insurance = True
-                                detected_company = company_name
-                                logger.info(f"Detected specific insurance company: {company_name} (keyword: {keyword})")
-                                break
-                    if is_specific_insurance:
-                        break
-
-                # Special handling for HSBC remitter info
-                if not is_specific_insurance and "hsbc" in normalized_text:
-                    remitter_match = re.search(
-                        r'remitter.*?(?:name|information).*?(?:oriental|national|united|new\s+india)',
-                        normalized_text, re.IGNORECASE | re.DOTALL)
-                    if remitter_match:
-                        remitter_text = remitter_match.group(0).lower()
-                        # Check which specific company is mentioned
-                        if "oriental" in remitter_text:
-                            is_specific_insurance = True
-                            detected_company = "oriental"
-                        elif "national" in remitter_text:
-                            is_specific_insurance = True
-                            detected_company = "national"
-                        elif "united" in remitter_text:
-                            is_specific_insurance = True
-                            detected_company = "united_india"
-                        elif "new india" in remitter_text:
-                            is_specific_insurance = True
-                            detected_company = "new_india"
-
-                        if is_specific_insurance:
-                            logger.info(
-                                f"Detected specific insurance company from HSBC remitter info: {detected_company}")
-
-            # Apply the appropriate TDS rate based on detection results
-            if is_specific_insurance:
-                # Special handling for New India Assurance
-                if detected_company == "new_india" and amount <= 300000:
-                    tds = round(amount * 0.09259259, 2)  # 9.259259% for amounts <= 300000
-                    logger.info(
-                        f"TDS computed for New India Assurance (amount <= 300000): {tds} (9.259259% of {amount})")
+                # Apply appropriate TDS rate based on the provider
+                if detected_provider in SPECIFIC_TDS_RATE_PROVIDERS:
+                    # Special handling for New India Assurance
+                    if detected_provider == "new_india" and amount <= NEW_INDIA_THRESHOLD:
+                        tds = round(amount * 0.09259259, 2)  # 9.259259% for amounts <= 300000
+                        logger.info(f"TDS computed for New India Assurance (≤ 300000): {tds} (9.259259% of {amount})")
+                    else:
+                        tds = round(amount * 0.11111111, 2)  # 11.111111% for specific providers
+                        logger.info(
+                            f"TDS computed for specific provider ({detected_provider}): {tds} (11.111111% of {amount})")
                 else:
-                    tds = round(amount * 0.11111111, 2)  # 11.111111% for specific insurance companies
+                    tds = round(amount * 0.09259259, 2)  # 9.259259% for all other providers
+                    logger.info(f"TDS computed for non-specific provider: {tds} (9.259259% of {amount})")
+
+                return tds, True
+
+            # If no provider was detected, try to detect one now
+            for provider, keywords in INSURANCE_PROVIDERS.items():
+                for keyword in keywords:
+                    # Use more precise matching to avoid false positives
+                    if keyword in normalized_text:
+                        # For single word keywords, ensure they're not part of other words
+                        if len(keyword.split()) == 1:
+                            pattern = r'\b' + re.escape(keyword) + r'\b'
+                            if re.search(pattern, normalized_text):
+                                detected_provider = provider
+                                logger.info(f"Detected insurance provider: {provider} (keyword: {keyword})")
+                                break
+                        else:
+                            # Multi-word keywords are more specific already
+                            detected_provider = provider
+                            logger.info(f"Detected insurance provider: {provider} (keyword: {keyword})")
+                            break
+                if detected_provider:
+                    break
+
+            # Apply appropriate TDS rate based on the detected provider
+            if detected_provider in SPECIFIC_TDS_RATE_PROVIDERS:
+                # Special handling for New India Assurance
+                if detected_provider == "new_india" and amount <= NEW_INDIA_THRESHOLD:
+                    tds = round(amount * 0.09259259, 2)  # 9.259259% for amounts <= 300000
+                    logger.info(f"TDS computed for New India Assurance (≤ 300000): {tds} (9.259259% of {amount})")
+                else:
+                    tds = round(amount * 0.11111111, 2)  # 11.111111% for specific providers
                     logger.info(
-                        f"TDS computed for specific insurance company ({detected_company}): {tds} (11.111111% of {amount})")
+                        f"TDS computed for specific provider ({detected_provider}): {tds} (11.111111% of {amount})")
             else:
-                tds = round(amount * 0.09259259, 2)  # 9.259259% for all other companies
-                logger.info(f"TDS computed for non-specific company: {tds} (9.259259% of {amount})")
+                tds = round(amount * 0.09259259, 2)  # 9.259259% for all other providers
+                logger.info(f"TDS computed for non-specific provider: {tds} (9.259259% of {amount})")
 
             return tds, True
 
