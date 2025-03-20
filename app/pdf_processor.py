@@ -235,6 +235,72 @@ class PDFProcessor:
 
         return data
 
+    def extract_cera_invoice_numbers(self, text):
+        """
+        Specialized method to extract Cera invoice numbers from OCR text.
+
+        Args:
+            text (str): The OCR text from the PDF
+
+        Returns:
+            list: List of extracted invoice numbers
+        """
+        logger.info("Using specialized Cera invoice extraction")
+
+        # Find the table section by looking for these specific patterns
+        table_markers = [
+            "document no", "bill no", "bill date",
+            "tdsamount", "netamount", "grossamount"
+        ]
+
+        # Get the approximate position of the table
+        table_pos = -1
+        for marker in table_markers:
+            pos = text.lower().replace(" ", "").find(marker)
+            if pos > -1:
+                table_pos = pos
+                logger.debug(f"Found table marker '{marker}' at position {pos}")
+                break
+
+        invoice_numbers = []
+
+        if table_pos > -1:
+            # Extract 500 characters after the table marker - this should include the invoice numbers
+            table_text = text[table_pos:table_pos + 600]
+            logger.debug(f"Table section: {table_text}")
+
+            # The OCR text shows patterns like "2a25-13620" and "lna25-13523"
+            # These are misreads of "2425-13520" and "2425-13523"
+            # We need to find any pattern matching 2???-1???? where ? can be a digit or letter
+            invoice_pattern = r'(\d\w{3}-\d\w{4})'
+            matches = re.findall(invoice_pattern, table_text)
+
+            for match in matches:
+                # Clean up the match to correct OCR errors
+                cleaned_match = match.lower()
+
+                # Replace common OCR errors
+                if 'a' in cleaned_match:
+                    cleaned_match = cleaned_match.replace('a', '4')
+                if 'l' in cleaned_match:
+                    cleaned_match = cleaned_match.replace('l', '4')  # In "lna25", the "l" should be "2"
+                if 'n' in cleaned_match:
+                    cleaned_match = cleaned_match.replace('n', '4')  # In "lna25", the "n" should be "4"
+                if 'o' in cleaned_match:
+                    cleaned_match = cleaned_match.replace('o', '0')
+                if 's' in cleaned_match:
+                    cleaned_match = cleaned_match.replace('s', '5')
+
+                # If the pattern starts with numbers that aren't 2425, it's probably not an invoice
+                if not cleaned_match.startswith('24'):
+                    continue
+
+                # Add to invoice numbers
+                invoice_numbers.append(cleaned_match)
+                logger.info(f"Extracted and cleaned invoice number: {match} -> {cleaned_match}")
+
+        return invoice_numbers
+
     # Expand provider identification in extract_bank_specific_data
     def extract_bank_specific_data(self, text):
         """
@@ -848,6 +914,44 @@ class PDFProcessor:
                     logger.debug(f"Extracted ICICI date: {data['receipt_date']}")
                     break
 
+        elif detected_provider == "cera":
+            logger.debug("Extracting data using Cera Sanitaryware patterns")
+
+            # Use specialized method to extract invoice numbers
+            invoice_numbers = self.extract_cera_invoice_numbers(text)
+
+            if invoice_numbers:
+                # Use the first invoice number as the unique ID
+                data['unique_id'] = invoice_numbers[0]
+                logger.debug(f"Extracted Cera bill number: {data['unique_id']}")
+
+            # Extract document date
+            date_patterns = [
+                r'Document\s+No\.\s*/\s*Date\s*(\d{2}\.\d{2}\.\d{4})',
+                r'Date\s*:?\s*(\d{2}\.\d{2}\.\d{4})',
+                r'(\d{2}\.\d{2}\.\d{4})'
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Cera date: {data['receipt_date']}")
+                    break
+
+            # Extract Net Total amount
+            amount_patterns = [
+                r'Net\s+Total\s*[^\d]*(\d+[,\.\d]+)',
+                r'Net\s+Amount\s*[^\d]*(\d+[,\.\d]+)'
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Cera amount: {data['receipt_amount']}")
+                    break
+
         elif detected_provider == "zion":
             logger.debug("Extracting data using Zion patterns")
 
@@ -1038,10 +1142,38 @@ class PDFProcessor:
         data_points = {}
         unique_id = None
         detected_provider = None
+        numeric_part = None
 
         # Check if this is an HSBC/Oriental document
         is_hsbc_doc = any(
             keyword.lower() in text.lower() for keyword in ["HSBC", "Oriental Insurance", "Oriental", "0rienta1"])
+
+        if unique_id:
+            numeric_part = re.sub(r'[^0-9]', '', unique_id)
+            if len(numeric_part) >= 6:  # Only use if it's a substantial number
+                logger.info(f"Numeric part of ID: {numeric_part}")
+            else:
+                numeric_part = None
+
+        if unique_id and re.search(r'ph.*?' + re.escape(unique_id), text.lower()):
+            logger.warning(f"Identified ID {unique_id} is likely a phone number - skipping")
+            unique_id = None
+
+        if not unique_id and table_data:
+            # Use the first entry's unique_id from table_data
+            unique_id = table_data[0].get('unique_id')
+            logger.info(f"Using unique ID from table data: {unique_id}")
+
+        if numeric_part and len(numeric_part) >= 6:
+            # Check if this might be a phone number
+            if re.search(r'ph.*?\d+[-\s]?\d+', text.lower()):
+                phone_number = re.search(r'ph.*?(\d+[-\s]?\d+)', text.lower())
+                if phone_number and phone_number.group(1).replace('-', '').replace(' ', '') == numeric_part:
+                    logger.info(f"Skipping potential phone number: {numeric_part}")
+                    numeric_part = None
+            logger.info(f"Numeric part of ID: {numeric_part}")
+        else:
+            numeric_part = None
 
         # FIRST PRIORITY: For HSBC/Oriental documents, use the specialized approach
         if is_hsbc_doc:
@@ -1113,7 +1245,15 @@ class PDFProcessor:
         # try the bank-specific extraction approach
         if not unique_id or not data_points:
             logger.info("Using bank-specific extraction approach")
-            bank_data = self.extract_bank_specific_data(text)
+            bank_result  = self.extract_bank_specific_data(text)
+
+            # Unpack the tuple correctly
+            if isinstance(bank_result, tuple) and len(bank_result) == 2:
+                bank_data, detected_provider = bank_result
+            else:
+                # For backward compatibility in case the return value format changes
+                bank_data = bank_result
+                detected_provider = None
 
             if bank_data:
                 # Get unique ID if available
@@ -1381,72 +1521,42 @@ class PDFProcessor:
     # In compute_tds method, add company-specific rates
     def compute_tds(self, amount, text):
         """
-        Compute TDS based on the provider and amount.
+        Compute TDS based on the logic provided.
         """
         try:
-            # Normalize the text for better matching
+            # Skip unnecessary import check
+            from app.utils.insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, \
+                NEW_INDIA_THRESHOLD
+
+            # Normalize text for matching
             normalized_text = ' '.join(text.lower().split())
+            logger.debug(f"Normalized text sample for TDS: {normalized_text[:100]}...")
 
-            # Define insurance companies with their TDS rates
-            insurance_rates = {
-                "oriental": 0.11111111,  # 11.111111%
-                "united_india": 0.11111111,  # 11.111111%
-                "new_india": {
-                    "default": 0.11111111,  # 11.111111% for amounts > 300000
-                    "below_threshold": 0.09259259  # 9.259259% for amounts <= 300000
-                },
-                "national": 0.11111111,  # 11.111111%
-                "hdfc_ergo": 0.09259259,  # 9.259259%
-                "icici_lombard": 0.09259259,  # 9.259259%
-                "iffco_tokio": 0.09259259,  # 9.259259%
-                "universal_sompo": 0.09259259,  # 9.259259%
-                "future_generali": 0.09259259,  # 9.259259%
-                "tata_aig": 0.09259259,  # 9.259259%
-                "bajaj_allianz": 0.09259259,  # 9.259259%
-                "liberty": 0.09259259,  # 9.259259%
-                "cholamandalam": 0.09259259,  # 9.259259%
-                "reliance": 0.09259259,  # 9.259259%
-                "zion": 0.09259259,  # 9.259259%
-                "cera": 0.09259259,  # 9.259259%  (for non-insurance)
-            }
+            # Default to non-specific rate
+            contains_insurance_company = False
 
-            # Default rate for other companies
-            default_rate = 0.09259259  # 9.259259%
-
-            # Detect company
-            detected_company = None
-            for company, keywords in self.insurance_providers.items():
-                if any(keyword in normalized_text for keyword in keywords):
-                    detected_company = company
-                    logger.info(f"Detected company for TDS computation: {company}")
+            # Check if any provider keywords are in the text
+            for provider, keywords in INSURANCE_PROVIDERS.items():
+                if any(keyword.lower() in normalized_text for keyword in keywords):
+                    contains_insurance_company = True
+                    detected_provider = provider
+                    logger.info(f"Detected provider for TDS: {provider}")
                     break
 
-            # Apply appropriate TDS rate
-            if detected_company:
-                if detected_company == "new_india":
-                    # Special handling for New India Assurance with threshold
-                    if amount <= 300000:
-                        tds_rate = insurance_rates["new_india"]["below_threshold"]
-                        logger.info(f"Using below threshold rate for New India: {tds_rate}")
-                    else:
-                        tds_rate = insurance_rates["new_india"]["default"]
-                        logger.info(f"Using above threshold rate for New India: {tds_rate}")
-                elif detected_company in insurance_rates:
-                    tds_rate = insurance_rates[detected_company]
-                    logger.info(f"Using company-specific rate for {detected_company}: {tds_rate}")
+            # Apply appropriate TDS calculation
+            if contains_insurance_company and detected_provider in SPECIFIC_TDS_RATE_PROVIDERS:
+                # Special handling for New India with threshold
+                if detected_provider == "new_india" and amount <= NEW_INDIA_THRESHOLD:
+                    tds = round(amount * 0.09259259, 2)
+                    logger.info(f"TDS computed for New India (≤300000): {tds} (9.259259% of {amount})")
                 else:
-                    tds_rate = default_rate
-                    logger.info(f"Using default rate for {detected_company}: {tds_rate}")
+                    tds = round(amount * 0.11111111, 2)
+                    logger.info(f"TDS computed for specific provider: {tds} (11.111111% of {amount})")
             else:
-                tds_rate = default_rate
-                logger.info(f"Using default rate (no company detected): {tds_rate}")
-
-            # Calculate TDS
-            tds = round(amount * tds_rate, 2)
-            logger.info(f"Computed TDS: {tds} ({tds_rate * 100}% of {amount})")
+                tds = round(amount * 0.09259259, 2)
+                logger.info(f"TDS computed for non-specific provider: {tds} (9.259259% of {amount})")
 
             return tds, True
-
         except Exception as e:
             logger.error(f"Error computing TDS: {str(e)}")
             return 0.0, True
@@ -1536,23 +1646,52 @@ class PDFProcessor:
                     table_data.append(row_data)
 
         # 3. Cera Sanitaryware multi-invoice table
-        if "cera" in text.lower() or "gross amount" in text.lower():
-            # Look for table with Document No., Bill No., Bill Date, Amount, and TDS columns
-            bill_rows = re.findall(
-                r'(\d{10,11})\s+(2425-\d{5})\s+(\d{2}\.\d{2}\.\d{4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})\s+(\d+\.\d{2})',
-                text)
+        if "cera sanitaryware" in text.lower() or "cerasanitaryware" in text.lower():
+            # Use specialized extraction for Cera invoice numbers
+            invoice_numbers = self.extract_cera_invoice_numbers(text)
 
-            for row in bill_rows:
-                row_data = {
-                    'unique_id': row[1].strip(),  # Bill No. as unique ID
-                    'document_no': row[0].strip(),
-                    'receipt_date': row[2].strip(),
-                    'gross_amount': row[3].strip(),
-                    'tds': row[4].strip(),
-                    'receipt_amount': row[5].strip(),
-                    'tds_computed': 'No'
-                }
-                table_data.append(row_data)
+            # Find the table contents with amounts
+            table_content_pattern = r'Document\s*No.*?Bill\s*No.*?Bill\s*Date.*?TDS\s*Amount.*?Net\s*Amount'
+            table_match = re.search(table_content_pattern, text, re.IGNORECASE | re.DOTALL)
+
+            table_text = text
+            if table_match:
+                table_text = text[table_match.start():]
+
+            # Process each extracted invoice number
+            for invoice_no in invoice_numbers:
+                # Look for amount patterns near the invoice number
+                invoice_pos = table_text.find(invoice_no)
+                if invoice_pos == -1:
+                    # Try finding the original (uncleaned) version
+                    for i in range(invoice_pos - 100, invoice_pos + 100):
+                        if i >= 0 and i < len(table_text):
+                            chunk = table_text[i:i + 20]
+                            if re.search(r'\d\w{3}-\d\w{4}', chunk):
+                                invoice_pos = i
+                                break
+
+                if invoice_pos >= 0:
+                    # Extract 150 characters after the invoice position - should include amounts
+                    context = table_text[invoice_pos:invoice_pos + 150]
+
+                    # Look for amount patterns
+                    amount_matches = re.findall(r'(\d+[,\.\d]+)', context)
+
+                    # Need at least 3 numbers for gross, TDS, and net
+                    if len(amount_matches) >= 3:
+                        # Convert to proper formats
+                        amounts = [amt.replace(',', '') for amt in amount_matches]
+
+                        row_data = {
+                            'unique_id': invoice_no,
+                            'gross_amount': amounts[0] if len(amounts) > 0 else "",
+                            'tds': amounts[1] if len(amounts) > 1 else "",
+                            'receipt_amount': amounts[2] if len(amounts) > 2 else ""
+                        }
+
+                        table_data.append(row_data)
+                        logger.debug(f"Extracted Cera table row for invoice: {invoice_no}")
 
         # 4. ICICI Lombard reference table
         icici_table_match = re.search(

@@ -33,7 +33,7 @@ INSURANCE_PROVIDERS = {
         }
 
 # Insurance companies that use 11.111111% TDS rate
-SPECIFIC_TDS_RATE_PROVIDERS = ["oriental", "united_india", "new_india", "national", "hsbc_oriental"]
+SPECIFIC_TDS_RATE_PROVIDERS = ["oriental", "united", "new_india", "national", "hsbc_oriental"]
 
 # Special case for New India Assurance with threshold
 NEW_INDIA_THRESHOLD = 300000

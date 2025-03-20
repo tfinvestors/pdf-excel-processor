@@ -137,8 +137,6 @@ class ExcelHandler:
 
         logger.info(f"Created header mapping: {self.header_mapping}")
 
-    from insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
-
     def compute_tds(self, amount, text, detected_provider=None):
         """
         Compute TDS based on the receipt amount and text content.
