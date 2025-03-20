@@ -5,7 +5,7 @@ import logging
 import re
 from openpyxl.styles import PatternFill, Font
 from datetime import datetime
-from insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
+from app.utils.insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
 
 # Configure logging
 logging.basicConfig(
