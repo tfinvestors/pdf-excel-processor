@@ -310,6 +310,35 @@ class ExcelHandler:
             # No match found using standard strategies
             logger.warning(f"No match found for ID: {unique_id}")
 
+            # Try special pattern matching for invoice numbers (like 2425-xxxxx)
+            if unique_id and '-' in unique_id and re.match(r'\d{4}-\d{5}', unique_id):
+                logger.debug(f"Using invoice number pattern matching for: {unique_id}")
+
+                # Try exact match first
+                for column in [self.invoice_column, self.client_ref_column]:
+                    if column is not None:
+                        column_series = self.df[column].astype(str)
+                        matches = column_series[column_series.str.contains(unique_id, case=False, na=False)]
+                        if not matches.empty:
+                            index = matches.index[0]
+                            logger.info(f"Found exact invoice match in column {column} at row {index}")
+                            return index
+
+                # If not found, try matching with just the part after the dash
+                dash_pos = unique_id.find('-')
+                if dash_pos > 0 and dash_pos < len(unique_id) - 1:
+                    suffix_part = unique_id[dash_pos + 1:]
+
+                    for column in [self.invoice_column, self.client_ref_column]:
+                        if column is not None:
+                            column_series = self.df[column].astype(str)
+                            matches = column_series[column_series.str.contains(suffix_part, na=False)]
+                            if not matches.empty:
+                                index = matches.index[0]
+                                logger.info(
+                                    f"Found invoice match by suffix part {suffix_part} in column {column} at row {index}")
+                                return index
+
             # Add document-specific fallback strategies for various PDF types
             if pdf_text:
                 # For OICL ADVICE PDF (Oriental Insurance)
