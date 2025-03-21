@@ -1143,6 +1143,7 @@ class PDFProcessor:
         unique_id = None
         detected_provider = None
         numeric_part = None
+        table_data = []
 
         # Check if this is an HSBC/Oriental document
         is_hsbc_doc = any(
@@ -1155,14 +1156,6 @@ class PDFProcessor:
             else:
                 numeric_part = None
 
-        if unique_id and re.search(r'ph.*?' + re.escape(unique_id), text.lower()):
-            logger.warning(f"Identified ID {unique_id} is likely a phone number - skipping")
-            unique_id = None
-
-        if not unique_id and table_data:
-            # Use the first entry's unique_id from table_data
-            unique_id = table_data[0].get('unique_id')
-            logger.info(f"Using unique ID from table data: {unique_id}")
 
         if numeric_part and len(numeric_part) >= 6:
             # Check if this might be a phone number
@@ -1416,6 +1409,15 @@ class PDFProcessor:
 
         # Extract table data which might contain multiple entries
         table_data = self.extract_table_data(text)
+
+        if unique_id and re.search(r'ph.*?' + re.escape(unique_id), text.lower()):
+            logger.warning(f"Identified ID {unique_id} is likely a phone number - skipping")
+            unique_id = None
+
+        if not unique_id and table_data:
+            # Use the first entry's unique_id from table_data
+            unique_id = table_data[0].get('unique_id')
+            logger.info(f"Using unique ID from table data: {unique_id}")
 
         # FINAL VALIDATION for HSBC documents
         if is_hsbc_doc and "Policy no" in text and "Claim number" in text:
