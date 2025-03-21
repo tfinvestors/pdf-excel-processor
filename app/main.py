@@ -265,6 +265,27 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     results['files']['unprocessed'].append(pdf_file)
                     continue
 
+                # First log the data that will be passed to the Excel handler
+                logger.debug(f"Data points to be passed to Excel handler: {data_points}")
+
+                # Specifically check the receipt_amount format
+                if 'receipt_amount' in data_points:
+                    try:
+                        test_float = float(data_points['receipt_amount'])
+                        # If valid, make sure it's stored as a string with the correct format
+                        data_points['receipt_amount'] = str(test_float)
+                    except ValueError:
+                        # If we can't convert it, log this severe issue
+                        logger.error(
+                            f"Invalid receipt_amount format before Excel update: {data_points['receipt_amount']}")
+                        # Apply one final emergency fix
+                        if '.' in data_points['receipt_amount'] and data_points['receipt_amount'].count('.') > 1:
+                            # Fix European format
+                            fixed_amount = re.sub(r'\.(?=\d{3})', '', data_points['receipt_amount'])
+                            logger.info(
+                                f"Emergency fix on receipt_amount: {data_points['receipt_amount']} -> {fixed_amount}")
+                            data_points['receipt_amount'] = fixed_amount
+
                 # Update Excel row with extracted data
                 success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
                                                                                             extracted_text, detected_provider)

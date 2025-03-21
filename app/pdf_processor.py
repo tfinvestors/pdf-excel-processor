@@ -1595,6 +1595,12 @@ class PDFProcessor:
 
         # Extract table data which might contain multiple entries
         table_data = self.extract_table_data(text)
+        # Ensure we're using the correct unique ID for Excel matching
+        if table_data and unique_id:
+            # Force the table_data entries to use the validated unique ID
+            for row in table_data:
+                if 'unique_id' in row:
+                    row['unique_id'] = unique_id
 
         if unique_id and re.search(r'ph.*?' + re.escape(unique_id), text.lower()):
             logger.warning(f"Identified ID {unique_id} is likely a phone number - skipping")
@@ -1654,22 +1660,24 @@ class PDFProcessor:
             amount = data_points['receipt_amount']
             try:
                 # Handle European number format (periods as thousands separators)
-                if '.' in amount and ',' in amount:
-                    # Convert European format (1.234,56) to US format (1234.56)
-                    amount = amount.replace('.', '').replace(',', '.')
-                elif '.' in amount and amount.count('.') > 1:
-                    # Format like "9.989.00" - remove thousands separators
+                if '.' in amount and amount.count('.') > 1:
+                    # Format like "9.989.00" - replace thousands separator and keep decimal
                     parts = amount.split('.')
                     if len(parts) == 3:  # Like 9.989.00
-                        amount = parts[0] + parts[1] + '.' + parts[2]
-                    else:
-                        amount = amount.replace('.', '', amount.count('.') - 1)
+                        clean_amount = parts[0] + parts[1] + '.' + parts[2]
+                        amount = clean_amount
 
                 # Clean any remaining non-numeric characters
                 amount = re.sub(r'[^0-9.]', '', amount)
 
                 # Convert to float
                 amount_float = float(amount)
+
+                # Format with 2 decimal places
+                data_points['receipt_amount'] = str(amount_float)
+
+            except ValueError:
+                logger.warning(f"Invalid receipt amount format: {amount}")
 
                 # For Cera documents, check for specific patterns indicating possible errors
                 if text and 'cera' in text.lower():
