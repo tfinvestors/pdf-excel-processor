@@ -153,6 +153,35 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     results['files']['unprocessed'].append(pdf_file)
                     continue
 
+                # Extract data with proper error handling
+                try:
+                    # Extract data points with better error handling
+                    extraction_result = pdf_processor.extract_data_points(extracted_text)
+
+                    # Handle different return types to ensure compatibility
+                    if isinstance(extraction_result, tuple):
+                        if len(extraction_result) == 4:
+                            unique_id, data_points, table_data, detected_provider = extraction_result
+                        elif len(extraction_result) == 3:
+                            unique_id, data_points, table_data = extraction_result
+                            detected_provider = None
+                        else:
+                            logger.error(f"Unexpected return format from extract_data_points: {extraction_result}")
+                            raise ValueError("Invalid return format from data extraction")
+                    else:
+                        logger.error(f"Unexpected return type from extract_data_points: {type(extraction_result)}")
+                        raise ValueError("Invalid return type from data extraction")
+
+                except Exception as e:
+                    logger.error(f"Error extracting data from {pdf_file}: {str(e)}")
+                    logger.error(traceback.format_exc())
+
+                    # Move to unprocessed folder
+                    move_to_appropriate_folder(pdf_path, False, processed_dir, unprocessed_dir)
+                    results['unprocessed'] += 1
+                    results['files']['unprocessed'].append(pdf_file)
+                    continue
+
                 # Log first 500 chars of extracted text for debugging
                 logger.debug(f"Extracted text sample: {extracted_text[:500000000000]}")
 

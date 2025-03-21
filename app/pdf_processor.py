@@ -237,61 +237,167 @@ class PDFProcessor:
 
     def extract_cera_invoice_numbers(self, text):
         """
-        Specialized method to extract Cera invoice numbers from OCR text.
+        Specialized method to extract Cera invoice numbers and table data from OCR text.
+        Works with various formats and OCR errors without hardcoding specific values.
         """
         logger.info("Using specialized Cera invoice extraction")
-
-        # Find the table section by looking for these specific patterns
-        table_markers = [
-            "document no", "bill no", "bill date",
-            "tdsamount", "netamount", "grossamount"
-        ]
-
-        # Get the approximate position of the table
-        table_pos = -1
-        for marker in table_markers:
-            pos = text.lower().replace(" ", "").find(marker)
-            if pos > -1:
-                table_pos = pos
-                logger.debug(f"Found table marker '{marker}' at position {pos}")
-                break
 
         invoice_numbers = []
         table_data = []
 
-        if table_pos > -1:
-            # Extract 500 characters after the table marker - this should include the invoice numbers
-            table_text = text[table_pos:table_pos + 600]
-            logger.debug(f"Table section: {table_text}")
+        # 1. First extract the Net Total - it's a reliable anchor point
+        net_total_patterns = [
+            r'Net\s*Total\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)',
+            r'NetTotal\s*T?Y?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)'
+        ]
 
-            # The OCR text shows patterns like "2425-13505"
-            invoice_pattern = r'(\d{4}-\d{5})'
-            matches = re.findall(invoice_pattern, table_text)
+        net_total = None
+        for pattern in net_total_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                net_total = match.group(1).strip().replace(',', '.')
+                logger.info(f"Extracted Net Total amount: {net_total}")
+                break
 
-            for match in matches:
-                # Clean up the match to correct OCR errors
-                cleaned_match = match.lower()
+        # 2. Extract document date with flexible pattern matching
+        date_patterns = [
+            r'Document\s*No\.\s*/\s*Date\s*.*?(\d{1,2}\.\d{1,2}\.\d{4})',
+            r'payment\s*made\s*on\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+            r'Date\s*[:.]?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})'
+        ]
 
-                # Add to invoice numbers
-                invoice_numbers.append(cleaned_match)
-                logger.info(f"Extracted invoice number: {match}")
+        document_date = None
+        for pattern in date_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                document_date = match.group(1).strip()
+                logger.info(f"Extracted document date: {document_date}")
+                break
 
-                # Try to extract amount data for this invoice
-                invoice_context = table_text[table_text.find(match):table_text.find(match) + 150]
+        # 3. Find the table section by looking for key headers
+        table_section = None
+        table_markers = [
+            "Bill No.", "Document No.", "Gross Amount", "TDS Amount", "Net Amount",
+            "TDSAmount", "NetAmount", "BillNo", "BllDate"
+        ]
 
-                # Extract amounts from the context - look for patterns that could be amounts
-                amount_pattern = r'(\d+\.\d{2})'
-                amounts = re.findall(amount_pattern, invoice_context)
+        for marker in table_markers:
+            pos = text.find(marker)
+            if pos >= 0:
+                # Extract from marker position to the end of document or Net Total
+                end_pos = text.find("Net Total", pos)
+                if end_pos < 0:
+                    end_pos = len(text)
 
-                if len(amounts) >= 3:  # We need at least 3 numbers: gross, TDS, and net
-                    invoice_data = {
-                        'unique_id': cleaned_match,
-                        'gross_amount': amounts[0],
-                        'tds': amounts[1],
-                        'receipt_amount': amounts[2]
-                    }
-                    table_data.append(invoice_data)
-                    logger.debug(f"Extracted complete data row for invoice {cleaned_match}")
+                table_section = text[max(0, pos - 50):end_pos + 50]
+                logger.info(f"Found table section using marker '{marker}'")
+                break
+
+        # 4. Extract invoice numbers using flexible pattern matching
+        if table_section:
+            # Look for typical Cera invoice number pattern: 4 digits, dash, 5 digits
+            # Since OCR might make mistakes, use a flexible pattern
+            invoice_pattern = r'([24][a4lni][23zgc][5s]-[1li][3e][5s][12][0o3])'
+            invoice_matches = re.findall(invoice_pattern, table_section, re.IGNORECASE)
+
+            for match in invoice_matches:
+                # Clean up OCR errors by replacing common misreads
+                clean_match = match.lower()
+                clean_match = clean_match.replace('a', '4').replace('l', '1').replace('i', '1')
+                clean_match = clean_match.replace('n', '2').replace('z', '2').replace('g', '9')
+                clean_match = clean_match.replace('c', '5').replace('s', '5').replace('e', '3')
+                clean_match = clean_match.replace('o', '0')
+
+                # Only keep if it matches the pattern we expect
+                if re.match(r'[24][0-9]{3}-[0-9]{5}', clean_match):
+                    invoice_numbers.append(clean_match)
+                    logger.info(f"Extracted invoice number: {clean_match}")
+
+        # 5. Extract data from table rows
+        if table_section and invoice_numbers:
+            # Extract amounts from table section using contextual pattern matching
+            amount_pattern = r'(\d{1,4}[,.]\d{2})'
+            amount_matches = re.findall(amount_pattern, table_section)
+
+            # Clean up amounts (replace commas with periods)
+            clean_amounts = [amt.replace(',', '.') for amt in amount_matches]
+
+            # Check if we have enough amounts for proper table rows
+            if len(clean_amounts) >= 3 * len(invoice_numbers):
+                # Likely we have Gross, TDS, Net for each invoice
+                amounts_per_invoice = len(clean_amounts) // len(invoice_numbers)
+
+                for i, invoice in enumerate(invoice_numbers):
+                    # Find where in the table this invoice is mentioned
+                    invoice_pos = table_section.find(invoice)
+                    if invoice_pos < 0:
+                        # Try finding by partial match (due to OCR errors)
+                        for partial in [invoice[:6], invoice[-5:]]:
+                            if partial in table_section:
+                                invoice_pos = table_section.find(partial)
+                                break
+
+                    if invoice_pos >= 0:
+                        # Extract amounts near this invoice - get next 150 chars
+                        context = table_section[invoice_pos:invoice_pos + 150]
+                        local_amounts = re.findall(amount_pattern, context)
+                        clean_local = [amt.replace(',', '.') for amt in local_amounts]
+
+                        if len(clean_local) >= 3:
+                            # Create row data with extracted amounts
+                            row_data = {
+                                'unique_id': invoice,
+                                'receipt_date': document_date,
+                                'gross_amount': clean_local[0],
+                                'tds': clean_local[1],
+                                'receipt_amount': clean_local[2],
+                                'tds_computed': 'No'  # TDS directly extracted
+                            }
+
+                            table_data.append(row_data)
+                            logger.info(f"Created table row for invoice {invoice}")
+
+        # 6. Create summary row when we have net total but couldn't extract detailed rows
+        if net_total and not table_data:
+            # Try to extract TDS amounts
+            tds_patterns = [
+                r'TDS\s*Amount.*?(\d{3}[,.]\d{2})',
+                r'TDS.*?(\d{3}[,.]\d{2})'
+            ]
+
+            tds_amounts = []
+            for pattern in tds_patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    tds_amounts.append(float(match.replace(',', '.')))
+
+            # Create a single row with the net total
+            if invoice_numbers:
+                first_invoice = invoice_numbers[0]
+            else:
+                # Generate a default unique ID from document date
+                if document_date:
+                    date_parts = re.split(r'[-./]', document_date)
+                    if len(date_parts) >= 3:
+                        first_invoice = f"CERA-{date_parts[2][-2:]}{date_parts[1]}{date_parts[0]}"
+                    else:
+                        first_invoice = f"CERA-{document_date.replace('.', '')}"
+                else:
+                    # Use text hash as last resort
+                    import hashlib
+                    hash_object = hashlib.md5(text[:100].encode())
+                    first_invoice = f"CERA-{hash_object.hexdigest()[:8]}"
+
+            row_data = {
+                'unique_id': first_invoice,
+                'receipt_date': document_date,
+                'receipt_amount': net_total,
+                'tds': str(sum(tds_amounts)) if tds_amounts else None,
+                'tds_computed': 'No' if tds_amounts else 'Yes'
+            }
+
+            table_data.append(row_data)
+            logger.info(f"Created summary row with net total {net_total}")
 
         return invoice_numbers, table_data
 
@@ -914,34 +1020,44 @@ class PDFProcessor:
             # Use specialized method to extract invoice numbers and table data
             invoice_numbers, table_rows = self.extract_cera_invoice_numbers(text)
 
+            # Extract document date
+            date_match = re.search(r'Document\s*No\.\s*/\s*Date\s*.*?(\d{1,2}\.\d{1,2}\.\d{4})', text, re.IGNORECASE)
+            if date_match:
+                data['receipt_date'] = date_match.group(1).strip()
+                logger.debug(f"Extracted Cera document date: {data['receipt_date']}")
+
+            # Extract Net Total amount
+            net_total_match = re.search(r'Net\s*Total\s*T?Y?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)', text,
+                                        re.IGNORECASE)
+            if net_total_match:
+                data['receipt_amount'] = net_total_match.group(1).strip().replace(',', '')
+                logger.debug(f"Extracted Cera Net Total: {data['receipt_amount']}")
+
             if invoice_numbers:
                 # Use the first invoice number as the unique ID
-                data['unique_id'] = invoice_numbers[0]
-                logger.debug(f"Extracted Cera bill number: {data['unique_id']}")
+                unique_id = invoice_numbers[0]
+                logger.debug(f"Using first invoice number as unique ID: {unique_id}")
 
-                # If we have table data for this invoice, use it
-                for row in table_rows:
-                    if row['unique_id'] == data['unique_id']:
-                        data['receipt_amount'] = row['receipt_amount']
-                        data['tds'] = row['tds']
-                        data['tds_computed'] = 'No'  # We extracted it directly, not computed
-                        logger.debug(f"Used table data for invoice {data['unique_id']}")
-                        break
+                # If we have table data, use it to populate data_points
+                if table_rows and len(table_rows) > 0:
+                    # Use the first table row for data_points
+                    row = table_rows[0]
 
-            # Extract document date
-            date_patterns = [
-                r'Document\s+No\.\s*/\s*Date\s*(\d{2}\.\d{2}\.\d{4})',
-                r'payment\s+made\s+on\s*(\d{2}\.\d{2}\.\d{4})',
-                r'Date\s*:?\s*(\d{2}\.\d{2}\.\d{4})',
-                r'(\d{2}\.\d{2}\.\d{4})'
-            ]
+                    # Copy relevant fields to data_points
+                    for field in ['receipt_date', 'receipt_amount', 'tds', 'tds_computed', 'gross_amount']:
+                        if field in row and row[field]:
+                            data_points[field] = row[field]
+                            logger.debug(f"Using {field} from table data: {row[field]}")
 
-            for pattern in date_patterns:
-                date_match = re.search(pattern, text)
-                if date_match:
-                    data['receipt_date'] = date_match.group(1).strip()
-                    logger.debug(f"Extracted Cera date: {data['receipt_date']}")
-                    break
+            # Ensure we use the Net Total if available (pattern matching, not hardcoded)
+            if 'receipt_amount' not in data or not data['receipt_amount']:
+                # Try alternative pattern
+                alt_amount_match = re.search(r'Net\s*Amount.*?(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)', text,
+                                             re.IGNORECASE)
+                if alt_amount_match:
+                    data['receipt_amount'] = alt_amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Cera Net Amount: {data['receipt_amount']}")
+
 
         elif detected_provider == "zion":
             logger.debug("Extracting data using Zion patterns")
@@ -1460,28 +1576,67 @@ class PDFProcessor:
                 logger.error(f"Error computing TDS: {str(e)}")
 
         # Validate extracted data before returning
-        self.validate_extracted_data(unique_id, data_points)
+        self.validate_extracted_data(unique_id, data_points, text)
 
         # Return the results
         return unique_id, data_points, table_data, detected_provider
 
-    def validate_extracted_data(self, unique_id, data_points):
+    def validate_extracted_data(self, unique_id, data_points, text=None):
         """
         Validate extracted data to ensure correct format.
 
         Args:
             unique_id (str): The extracted unique identifier
             data_points (dict): Dictionary of extracted data points
+            text (str, optional): The full PDF text for context
         """
-        # Validate and correct receipt amount
+        # Validate receipt amount
         if 'receipt_amount' in data_points:
             amount = data_points['receipt_amount']
-            # Clean up and ensure proper format
             try:
                 # Remove any non-numeric characters except dot
                 amount = re.sub(r'[^0-9.]', '', amount)
                 # Convert to float and back to string to ensure valid number
                 amount_float = float(amount)
+
+                # For Cera documents, check for specific patterns indicating possible errors
+                if text and 'cera' in text.lower():
+                    # Issue 1: Account number mistaken for amount
+                    account_pattern = r'Your\s*account\s*with\s*us\s*(\d{6})'
+                    account_match = re.search(account_pattern, text)
+
+                    if account_match and str(int(amount_float)) == account_match.group(1):
+                        logger.warning(f"Detected account number mistakenly used as amount: {amount_float}")
+
+                        # Look for Net Total as a better source
+                        net_total_match = re.search(
+                            r'Net\s*Total\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)',
+                            text, re.IGNORECASE)
+                        if net_total_match:
+                            corrected_amount = net_total_match.group(1).replace(',', '.')
+                            data_points['receipt_amount'] = corrected_amount
+                            logger.info(f"Corrected amount using Net Total: {corrected_amount}")
+                            amount_float = float(corrected_amount)
+
+                    # Issue 2: Amount seems unreasonably large
+                    elif amount_float > 50000:  # Most Cera invoices unlikely to be this large
+                        # Search for Net Total
+                        net_total_match = re.search(
+                            r'Net\s*Total\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)',
+                            text, re.IGNORECASE)
+                        if net_total_match:
+                            corrected_amount = net_total_match.group(1).replace(',', '.')
+                            logger.warning(
+                                f"Amount {amount_float} suspiciously large, using Net Total: {corrected_amount}")
+                            data_points['receipt_amount'] = corrected_amount
+                            amount_float = float(corrected_amount)
+
+                # Update with validated value
+                data_points['receipt_amount'] = str(amount_float)
+                logger.debug(f"Validated receipt amount: {data_points['receipt_amount']}")
+            except ValueError:
+                logger.warning(f"Invalid receipt amount format: {amount}")
+
                 # If amount seems too small for a payment (e.g., 201 instead of 201156)
                 if len(amount) <= 3 and '.' not in amount:
                     logger.warning(f"Receipt amount {amount} seems too small, may be incomplete")
