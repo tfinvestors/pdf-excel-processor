@@ -238,12 +238,6 @@ class PDFProcessor:
     def extract_cera_invoice_numbers(self, text):
         """
         Specialized method to extract Cera invoice numbers from OCR text.
-
-        Args:
-            text (str): The OCR text from the PDF
-
-        Returns:
-            list: List of extracted invoice numbers
         """
         logger.info("Using specialized Cera invoice extraction")
 
@@ -263,43 +257,43 @@ class PDFProcessor:
                 break
 
         invoice_numbers = []
+        table_data = []
 
         if table_pos > -1:
             # Extract 500 characters after the table marker - this should include the invoice numbers
             table_text = text[table_pos:table_pos + 600]
             logger.debug(f"Table section: {table_text}")
 
-            # The OCR text shows patterns like "2a25-13620" and "lna25-13523"
-            # These are misreads of "2425-13520" and "2425-13523"
-            # We need to find any pattern matching 2???-1???? where ? can be a digit or letter
-            invoice_pattern = r'(\d\w{3}-\d\w{4})'
+            # The OCR text shows patterns like "2425-13505"
+            invoice_pattern = r'(\d{4}-\d{5})'
             matches = re.findall(invoice_pattern, table_text)
 
             for match in matches:
                 # Clean up the match to correct OCR errors
                 cleaned_match = match.lower()
 
-                # Replace common OCR errors
-                if 'a' in cleaned_match:
-                    cleaned_match = cleaned_match.replace('a', '4')
-                if 'l' in cleaned_match:
-                    cleaned_match = cleaned_match.replace('l', '4')  # In "lna25", the "l" should be "2"
-                if 'n' in cleaned_match:
-                    cleaned_match = cleaned_match.replace('n', '4')  # In "lna25", the "n" should be "4"
-                if 'o' in cleaned_match:
-                    cleaned_match = cleaned_match.replace('o', '0')
-                if 's' in cleaned_match:
-                    cleaned_match = cleaned_match.replace('s', '5')
-
-                # If the pattern starts with numbers that aren't 2425, it's probably not an invoice
-                if not cleaned_match.startswith('24'):
-                    continue
-
                 # Add to invoice numbers
                 invoice_numbers.append(cleaned_match)
-                logger.info(f"Extracted and cleaned invoice number: {match} -> {cleaned_match}")
+                logger.info(f"Extracted invoice number: {match}")
 
-        return invoice_numbers
+                # Try to extract amount data for this invoice
+                invoice_context = table_text[table_text.find(match):table_text.find(match) + 150]
+
+                # Extract amounts from the context - look for patterns that could be amounts
+                amount_pattern = r'(\d+\.\d{2})'
+                amounts = re.findall(amount_pattern, invoice_context)
+
+                if len(amounts) >= 3:  # We need at least 3 numbers: gross, TDS, and net
+                    invoice_data = {
+                        'unique_id': cleaned_match,
+                        'gross_amount': amounts[0],
+                        'tds': amounts[1],
+                        'receipt_amount': amounts[2]
+                    }
+                    table_data.append(invoice_data)
+                    logger.debug(f"Extracted complete data row for invoice {cleaned_match}")
+
+        return invoice_numbers, table_data
 
     # Expand provider identification in extract_bank_specific_data
     def extract_bank_specific_data(self, text):
@@ -917,17 +911,27 @@ class PDFProcessor:
         elif detected_provider == "cera":
             logger.debug("Extracting data using Cera Sanitaryware patterns")
 
-            # Use specialized method to extract invoice numbers
-            invoice_numbers = self.extract_cera_invoice_numbers(text)
+            # Use specialized method to extract invoice numbers and table data
+            invoice_numbers, table_rows = self.extract_cera_invoice_numbers(text)
 
             if invoice_numbers:
                 # Use the first invoice number as the unique ID
                 data['unique_id'] = invoice_numbers[0]
                 logger.debug(f"Extracted Cera bill number: {data['unique_id']}")
 
+                # If we have table data for this invoice, use it
+                for row in table_rows:
+                    if row['unique_id'] == data['unique_id']:
+                        data['receipt_amount'] = row['receipt_amount']
+                        data['tds'] = row['tds']
+                        data['tds_computed'] = 'No'  # We extracted it directly, not computed
+                        logger.debug(f"Used table data for invoice {data['unique_id']}")
+                        break
+
             # Extract document date
             date_patterns = [
                 r'Document\s+No\.\s*/\s*Date\s*(\d{2}\.\d{2}\.\d{4})',
+                r'payment\s+made\s+on\s*(\d{2}\.\d{2}\.\d{4})',
                 r'Date\s*:?\s*(\d{2}\.\d{2}\.\d{4})',
                 r'(\d{2}\.\d{2}\.\d{4})'
             ]
@@ -937,19 +941,6 @@ class PDFProcessor:
                 if date_match:
                     data['receipt_date'] = date_match.group(1).strip()
                     logger.debug(f"Extracted Cera date: {data['receipt_date']}")
-                    break
-
-            # Extract Net Total amount
-            amount_patterns = [
-                r'Net\s+Total\s*[^\d]*(\d+[,\.\d]+)',
-                r'Net\s+Amount\s*[^\d]*(\d+[,\.\d]+)'
-            ]
-
-            for pattern in amount_patterns:
-                amount_match = re.search(pattern, text)
-                if amount_match:
-                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
-                    logger.debug(f"Extracted Cera amount: {data['receipt_amount']}")
                     break
 
         elif detected_provider == "zion":
@@ -1145,6 +1136,10 @@ class PDFProcessor:
         numeric_part = None
         table_data = []
 
+        if not text:
+            logger.warning("No text provided for data extraction")
+            return None, {}, [], None
+
         # Check if this is an HSBC/Oriental document
         is_hsbc_doc = any(
             keyword.lower() in text.lower() for keyword in ["HSBC", "Oriental Insurance", "Oriental", "0rienta1"])
@@ -1167,6 +1162,22 @@ class PDFProcessor:
             logger.info(f"Numeric part of ID: {numeric_part}")
         else:
             numeric_part = None
+
+        if unique_id:
+            # Check if unique ID appears near phone-related keywords
+            phone_indicators = ["ph", "phone", "tel", "fax"]
+
+            # Look for the unique ID appearing near any phone indicator within ~50 chars
+            for indicator in phone_indicators:
+                # Check if the unique ID is mentioned near a phone indicator
+                indicator_pos = text.lower().find(indicator)
+                if indicator_pos >= 0:
+                    # Check if unique_id is within 50 chars of the phone indicator
+                    context = text.lower()[max(0, indicator_pos - 10):indicator_pos + 50]
+                    if unique_id.lower() in context or unique_id.lower().replace('-', '') in context:
+                        logger.warning(f"ID {unique_id} appears near '{indicator}' - likely a phone number")
+                        unique_id = None
+                        break
 
         # FIRST PRIORITY: For HSBC/Oriental documents, use the specialized approach
         if is_hsbc_doc:
@@ -1649,6 +1660,11 @@ class PDFProcessor:
 
         # 3. Cera Sanitaryware multi-invoice table
         if "cera sanitaryware" in text.lower() or "cerasanitaryware" in text.lower():
+            # Reuse the specialized extraction to avoid duplication
+            _, cera_table_data = self.extract_cera_invoice_numbers(text)
+            table_data.extend(cera_table_data)
+            return table_data  # Return early to avoid duplicate processing
+
             # Use specialized extraction for Cera invoice numbers
             invoice_numbers = self.extract_cera_invoice_numbers(text)
 
