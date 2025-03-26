@@ -526,6 +526,22 @@ class ExcelHandler:
         if row_index is None or not data_points:
             return False, [], list(data_points.keys())
 
+        # Fix European number format in receipt_amount
+        if 'receipt_amount' in data_points and data_points['receipt_amount']:
+            amount_str = data_points['receipt_amount']
+
+            # Handle European number format with multiple periods (9.989.00)
+            if '.' in amount_str and amount_str.count('.') > 1:
+                try:
+                    # For format like 9.989.00
+                    parts = amount_str.split('.')
+                    if len(parts) == 3:
+                        clean_amount = parts[0] + parts[1] + '.' + parts[2]
+                        data_points['receipt_amount'] = clean_amount
+                        logger.info(f"Fixed European format: {amount_str} -> {clean_amount}")
+                except Exception as e:
+                    logger.error(f"Error fixing European format: {e}")
+
         updated_fields = []
         failed_fields = []
 
