@@ -14,6 +14,8 @@ from PIL import Image, ImageEnhance
 import cv2
 import numpy as np
 import time
+import json
+import traceback
 
 # Configure logging
 logger = logging.getLogger("pdf_extractor")
@@ -62,7 +64,7 @@ class PDFTextExtractor:
     This ensures consistent text extraction between model training and inference.
     """
 
-    def __init__(self, poppler_path=None, debug_mode=False):
+    def __init__(self, api_url=None, poppler_path=None, debug_mode=False):
         """
         Initialize the PDF text extractor.
 
@@ -70,6 +72,7 @@ class PDFTextExtractor:
             poppler_path (str): Path to poppler binaries for pdf2image
             debug_mode (bool): Enable debug mode for extra logging
         """
+        self.api_url = api_url
         self.poppler_path = poppler_path
         self.debug_mode = debug_mode
         self.debug_dir = None
@@ -83,6 +86,55 @@ class PDFTextExtractor:
             self.debug_dir = os.path.join(os.path.expanduser("~"), "Downloads", "PDF_Debug")
             os.makedirs(self.debug_dir, exist_ok=True)
             logger.info(f"Debug mode enabled. Outputs will be saved to {self.debug_dir}")
+
+    def _extract_via_api(self, pdf_path=None, pdf_content=None):
+        """
+        Extract text using external API service.
+
+        Args:
+            pdf_path (str, optional): Path to the PDF file
+            pdf_content (bytes, optional): PDF content as bytes
+
+        Returns:
+            str: Extracted text or empty string if extraction fails
+        """
+        if not self.api_url:
+            logger.warning("No API URL configured for PDF text extraction")
+            return ""
+
+        try:
+            # Prepare the file for upload
+            if pdf_path:
+                with open(pdf_path, 'rb') as f:
+                    files = {'file': f}
+                    response = requests.post(self.api_url, files=files)
+            elif pdf_content:
+                files = {'file': ('document.pdf', pdf_content)}
+                response = requests.post(self.api_url, files=files)
+            else:
+                logger.error("No PDF source provided for API extraction")
+                return ""
+
+            # Check response
+            if response.status_code == 200:
+                # Assuming the API returns JSON with 'text' key
+                result = response.json()
+                extracted_text = result.get('text', '')
+
+                # Optional: Log extracted text length for debugging
+                logger.info(f"API extraction successful. Text length: {len(extracted_text)} characters")
+
+                return extracted_text
+            else:
+                logger.error(f"API extraction failed. Status code: {response.status_code}")
+                return ""
+
+        except requests.RequestException as e:
+            logger.error(f"API extraction error: {str(e)}")
+            return ""
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON response from API")
+            return ""
 
     def extract_from_file(self, pdf_path):
         """
@@ -101,19 +153,26 @@ class PDFTextExtractor:
         try:
             logger.info(f"Extracting text from PDF file: {pdf_path}")
 
-            # Use the common extraction logic
+            # First, try API extraction
+            api_text = self._extract_via_api(pdf_path=pdf_path)
+            if api_text:
+                return api_text
+
+            # Fallback to local extraction
+            logger.info(f"Falling back to local extraction for: {pdf_path}")
             return self._extract_text_from_pdf(
                 pdf_path=pdf_path,
                 pdf_content=None,
                 source_type="file"
             )
+
         except Exception as e:
             logger.error(f"Error extracting text from PDF file {pdf_path}: {str(e)}")
             return ""
 
     def extract_from_url(self, url, timeout=60):
         """
-        Extract text from a PDF file at the given URL.
+        Extract text from a PDF file at the given URL with comprehensive handling.
 
         Args:
             url (str): URL to the PDF file
@@ -123,62 +182,131 @@ class PDFTextExtractor:
             str: Extracted text
         """
         try:
-            # Check if it's a Google Drive URL
+            # Handle Google Drive URL variations
             if 'drive.google.com' in url:
                 # Convert sharing URL to direct download URL
                 file_id = None
 
-                # Handle various Google Drive URL formats
-                if '/file/d/' in url:
-                    file_id = url.split('/file/d/')[1].split('/')[0]
-                elif 'id=' in url:
-                    file_id = url.split('id=')[1].split('&')[0]
-                elif '/open?id=' in url:
-                    file_id = url.split('/open?id=')[1].split('&')[0]
+                # Comprehensive Google Drive URL parsing
+                url_parsing_strategies = [
+                    lambda: url.split('/file/d/')[1].split('/')[0] if '/file/d/' in url else None,
+                    lambda: url.split('id=')[1].split('&')[0] if 'id=' in url else None,
+                    lambda: url.split('/open?id=')[1].split('&')[0] if '/open?id=' in url else None,
+                    lambda: url.split('open?')[1].split('&')[0] if 'open?' in url else None
+                ]
+
+                # Try each parsing strategy
+                for strategy in url_parsing_strategies:
+                    try:
+                        file_id = strategy()
+                        if file_id:
+                            break
+                    except Exception:
+                        continue
 
                 if file_id:
-                    # Direct download URL format
-                    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                    # Direct download URL format with multiple variations
+                    direct_url_formats = [
+                        f"https://drive.google.com/uc?export=download&id={file_id}",
+                        f"https://drive.google.com/file/d/{file_id}/view",
+                        f"https://drive.google.com/open?id={file_id}"
+                    ]
                 else:
                     logger.error(f"Could not parse Google Drive URL: {url}")
                     return ""
             else:
                 direct_url = url
+                direct_url_formats = [url]
 
-            # Download the PDF with timeout and retry logic
+            # Download the PDF with comprehensive retry and fallback mechanism
             max_retries = 3
             retry_delay = 2
+            response = None
 
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"Downloading PDF from {direct_url} (attempt {attempt + 1}/{max_retries})")
-                    response = requests.get(direct_url, timeout=timeout)
-                    if response.status_code == 200:
-                        break
-                    logger.warning(f"Failed to download PDF: Status code {response.status_code}. Retrying...")
-                    time.sleep(retry_delay)
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Request error: {str(e)}. Retrying...")
-                    time.sleep(retry_delay)
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to download PDF after {max_retries} attempts")
-                        return ""
+            # Try different URL formats and retry mechanisms
+            for direct_url in direct_url_formats:
+                for attempt in range(max_retries):
+                    try:
+                        # Comprehensive request headers to mimic browser
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Referer': direct_url
+                        }
 
-            if response.status_code != 200:
-                logger.error(f"Failed to download PDF: Status code {response.status_code}")
+                        logger.info(f"Downloading PDF from {direct_url} (attempt {attempt + 1}/{max_retries})")
+
+                        # Use streaming to handle large files and prevent memory issues
+                        response = requests.get(
+                            direct_url,
+                            headers=headers,
+                            timeout=timeout,
+                            stream=True
+                        )
+
+                        # Validate response
+                        if response.status_code == 200:
+                            # Verify content type is PDF
+                            content_type = response.headers.get('Content-Type', '').lower()
+                            if 'application/pdf' not in content_type and 'pdf' not in content_type:
+                                logger.warning(f"Non-PDF content type: {content_type}")
+                                continue
+
+                            # Read content, limiting to prevent excessive memory usage
+                            pdf_content = response.content
+                            if len(pdf_content) < 10:  # Minimum PDF file size check
+                                logger.warning("Downloaded content is too small to be a valid PDF")
+                                continue
+
+                            break
+
+                        logger.warning(f"Failed to download PDF: Status code {response.status_code}. Retrying...")
+                        time.sleep(retry_delay)
+
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"Request error: {str(e)}. Retrying...")
+                        time.sleep(retry_delay)
+
+                        # Last attempt for this URL
+                        if attempt == max_retries - 1:
+                            logger.error(f"Failed to download PDF from {direct_url} after {max_retries} attempts")
+                            break
+
+                # If successful download, proceed with extraction
+                if response and response.status_code == 200:
+                    break
+
+            # Final validation
+            if not response or response.status_code != 200:
+                logger.error(f"Exhausted all download attempts for URL: {url}")
                 return ""
 
-            pdf_content = response.content
+            # Attempt API extraction first
+            api_text = self._extract_via_api(pdf_content=pdf_content)
+            if api_text:
+                return api_text
 
-            # Use the common extraction logic
-            return self._extract_text_from_pdf(
+            # Fallback to local extraction
+            logger.info(f"Falling back to local extraction for URL: {url}")
+            extracted_text = self._extract_text_from_pdf(
                 pdf_path=None,
                 pdf_content=pdf_content,
                 source_type="url"
             )
 
+            # Additional logging for extracted text
+            if not extracted_text:
+                logger.warning(f"No text extracted from PDF URL: {url}")
+            else:
+                logger.info(f"Successfully extracted text from PDF URL. Length: {len(extracted_text)} characters")
+
+            return extracted_text
+
         except Exception as e:
-            logger.error(f"Error extracting text from PDF URL {url}: {str(e)}")
+            # Comprehensive error logging
+            logger.error(f"Unhandled error extracting text from PDF URL {url}: {str(e)}")
+            logger.error(traceback.format_exc())
             return ""
 
     def extract_from_bytes(self, pdf_bytes):
@@ -194,12 +322,19 @@ class PDFTextExtractor:
         try:
             logger.info("Extracting text from PDF bytes")
 
-            # Use the common extraction logic
-            return self._extract_text_from_pdf(
-                pdf_path=None,
-                pdf_content=pdf_bytes,
-                source_type="bytes"
-            )
+            # First, try API extraction
+            api_text = self._extract_via_api(pdf_content=pdf_bytes)
+            if api_text:
+                return api_text
+
+                # Fallback to local extraction
+                logger.info("Falling back to local extraction from bytes")
+                return self._extract_text_from_pdf(
+                    pdf_path=None,
+                    pdf_content=pdf_bytes,
+                    source_type="bytes"
+                )
+
         except Exception as e:
             logger.error(f"Error extracting text from PDF bytes: {str(e)}")
             return ""

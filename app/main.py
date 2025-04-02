@@ -3,6 +3,10 @@ import shutil
 from datetime import datetime
 import logging
 import traceback
+import json
+
+from config import Config
+
 from app.pdf_processor import PDFProcessor
 from app.excel_handler import ExcelHandler
 
@@ -16,6 +20,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("main")
+
 
 def move_to_appropriate_folder(pdf_path, success, processed_dir, unprocessed_dir):
     """
@@ -59,6 +64,14 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
     Returns:
         dict: Processing results summary
     """
+    # Initialize processors with API URL from config
+    pdf_processor = PDFProcessor(
+        use_ml=Config.USE_ML_MODEL,
+        debug_mode=Config.DEBUG_MODE,
+        poppler_path=Config.POPPLER_PATH,
+        text_extraction_api_url=Config.PDF_EXTRACTION_API_URL
+    )
+
     results = {
         'total': 0,
         'processed': 0,

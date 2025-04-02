@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 import concurrent.futures
 import json
+import requests
 
 # Import unified PDF text extractor
 from app.utils.pdf_text_extractor import PDFTextExtractor
@@ -25,7 +26,7 @@ logger = logging.getLogger("pdf_processor")
 
 
 class PDFProcessor:
-    def __init__(self, use_ml=True, debug_mode=False, poppler_path=None):
+    def __init__(self, use_ml=True, debug_mode=False, poppler_path=None, text_extraction_api_url=None):
         """
         Initialize the PDF processor.
 
@@ -33,14 +34,17 @@ class PDFProcessor:
             use_ml (bool): Whether to use ML model for extraction enhancement
             debug_mode (bool): Enable debug mode for visualization and extra logging
             poppler_path (str): Path to poppler binaries for pdf2image
+            text_extraction_api_url (str): URL for external PDF text extraction API
         """
         self.use_ml = use_ml
         self.debug_mode = debug_mode
         self.debug_dir = None
         self.poppler_path = poppler_path
+        self.text_extraction_api_url = text_extraction_api_url
 
         # Initialize the unified PDF text extractor
         self.text_extractor = PDFTextExtractor(
+            api_url=self.text_extraction_api_url,
             poppler_path=self.poppler_path,
             debug_mode=self.debug_mode
         )
