@@ -90,16 +90,15 @@ class PDFTextExtractor:
     def _extract_via_api(self, pdf_path=None, pdf_content=None):
         """
         Extract text using external API service.
-
-        Args:
-            pdf_path (str, optional): Path to the PDF file
-            pdf_content (bytes, optional): PDF content as bytes
-
-        Returns:
-            str: Extracted text or empty string if extraction fails
         """
+        # Use a more specific endpoint
+        full_api_url = f"{self.api_url}/api/v1/extract"  # Add specific route
+
+        logger.info(f"Attempting API extraction")
+        logger.info(f"Full API URL: {full_api_url}")
+
         if not self.api_url:
-            logger.warning("No API URL configured for PDF text extraction")
+            logger.error("No API URL configured")
             return ""
 
         try:
@@ -107,38 +106,42 @@ class PDFTextExtractor:
             if pdf_path:
                 with open(pdf_path, 'rb') as f:
                     files = {'file': f}
-                    response = requests.post(self.api_url, files=files)
+                    logger.info(f"Uploading file: {pdf_path}")
+                    response = requests.post(full_api_url, files=files)
             elif pdf_content:
                 files = {'file': ('document.pdf', pdf_content)}
-                response = requests.post(self.api_url, files=files)
+                logger.info("Uploading PDF content")
+                response = requests.post(full_api_url, files=files)
             else:
                 logger.error("No PDF source provided for API extraction")
                 return ""
 
-            # Check response
+            # Log response details
+            logger.info(f"API Response Status: {response.status_code}")
+            logger.info(f"API Response Headers: {response.headers}")
+
             if response.status_code == 200:
                 # Assuming the API returns JSON with 'text' key
                 result = response.json()
                 extracted_text = result.get('text', '')
 
-                # Optional: Log extracted text length for debugging
-                logger.info(f"API extraction successful. Text length: {len(extracted_text)} characters")
-
+                logger.info(f"API Extraction Successful. Text Length: {len(extracted_text)}")
                 return extracted_text
             else:
-                logger.error(f"API extraction failed. Status code: {response.status_code}")
+                logger.error(f"API Extraction Failed. Status Code: {response.status_code}")
+                logger.error(f"Response Content: {response.text}")
                 return ""
 
         except requests.RequestException as e:
-            logger.error(f"API extraction error: {str(e)}")
+            logger.error(f"API Request Error: {str(e)}")
             return ""
         except json.JSONDecodeError:
-            logger.error("Invalid JSON response from API")
+            logger.error("Invalid JSON Response from API")
             return ""
 
     def extract_from_file(self, pdf_path):
         """
-        Extract text from a local PDF file.
+        Extract text from a local PDF file with API-first approach.
 
         Args:
             pdf_path (str): Path to the PDF file
@@ -151,21 +154,22 @@ class PDFTextExtractor:
             return ""
 
         try:
-            logger.info(f"Extracting text from PDF file: {pdf_path}")
+            logger.info(f"Attempting extraction for: {pdf_path}")
+            logger.info(f"API URL: {self.api_url}")
 
             # First, try API extraction
             api_text = self._extract_via_api(pdf_path=pdf_path)
             if api_text:
+                logger.info("✅ API Extraction Successful!")
                 return api_text
 
             # Fallback to local extraction
-            logger.info(f"Falling back to local extraction for: {pdf_path}")
+            logger.warning("Falling back to local extraction")
             return self._extract_text_from_pdf(
                 pdf_path=pdf_path,
                 pdf_content=None,
                 source_type="file"
             )
-
         except Exception as e:
             logger.error(f"Error extracting text from PDF file {pdf_path}: {str(e)}")
             return ""

@@ -6,7 +6,7 @@ class Config:
     # PDF Text Extraction API Configuration
     PDF_EXTRACTION_API_URL = os.environ.get(
         'PDF_EXTRACTION_API_URL',
-        'http://localhost:8000/extract'  # Appending '/extract' as the specific endpoint
+        'http://localhost:8000/api/v1'  # Appending '/extract' as the specific endpoint
     )
 
     # Fallback and Debugging Options
