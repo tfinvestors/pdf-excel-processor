@@ -59,54 +59,55 @@ def test_pdf_extraction(pdf_path):
 
 def manual_api_test(pdf_path):
     """
-    Manual API test to diagnose connection issues
+    Comprehensive API diagnostic test
     """
+    base_url = 'http://localhost:8000/api/v1'
+
     try:
-        upload_url = 'http://localhost:8000/api/v1/documents/upload'
-
+        # Read file content
         with open(pdf_path, 'rb') as f:
-            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-            data = {
-                'process_immediately': 'true',
-                'process_directly': 'true'
-            }
+            file_content = f.read()
 
-            print("Attempting direct API upload...")
-            try:
-                response = requests.post(upload_url, files=files, data=data, timeout=5)
+        # Upload file
+        upload_url = f'{base_url}/documents/upload'
+        files = {'file': (os.path.basename(pdf_path), file_content, 'application/pdf')}
+        data = {
+            'process_immediately': 'true',
+            'process_directly': 'true'
+        }
 
-                print("\n=== UPLOAD RESPONSE ===")
-                print(f"Status Code: {response.status_code}")
-                print("Response Headers:")
-                for key, value in response.headers.items():
-                    print(f"  {key}: {value}")
+        print("Attempting direct API upload...")
+        upload_response = requests.post(upload_url, files=files, data=data, timeout=10)
 
-                try:
-                    print("\nResponse JSON:")
-                    print(response.json())
-                except ValueError:
-                    print("Response is not JSON")
-                    print("Response Text:")
-                    print(response.text)
+        print("\n=== UPLOAD RESPONSE ===")
+        print(f"Status Code: {upload_response.status_code}")
+        upload_result = upload_response.json()
+        document_id = upload_result.get('document_id')
 
-            except requests.ConnectionError as conn_error:
-                print(f"Connection Error: {conn_error}")
-                print("Possible reasons:")
-                print("1. API service not running")
-                print("2. Incorrect port")
-                print("3. Firewall blocking connection")
-                print("4. Service not started")
+        print("\n=== DOCUMENT DETAILS ===")
+        print(f"Document ID: {document_id}")
 
-            except requests.Timeout:
-                print("Request timed out")
+        # Check status
+        status_url = f'{base_url}/extract/{document_id}/status'
+        status_response = requests.get(status_url, timeout=10)
+        status_data = status_response.json()
 
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                import traceback
-                traceback.print_exc()
+        print("\n=== STATUS CHECK ===")
+        print(f"Status: {status_data}")
+
+        # Retrieve text
+        if status_data.get('status') == 'completed':
+            text_url = f'{base_url}/documents/{document_id}/consolidated-text'
+            text_response = requests.get(text_url, timeout=10)
+            text_result = text_response.json()
+
+            print("\n=== EXTRACTED TEXT ===")
+            print(f"Text Length: {len(text_result.get('consolidated_text', ''))}")
+            print("First 500 characters:")
+            print(text_result.get('consolidated_text', '')[:500])
 
     except Exception as e:
-        print(f"Error in manual API test: {e}")
+        print(f"Error during API test: {e}")
         import traceback
         traceback.print_exc()
 

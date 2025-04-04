@@ -92,10 +92,11 @@ class PDFTextExtractor:
         Extract text using external API service with comprehensive error handling.
         """
         logger.info(f"Attempting API extraction")
+        base_url = 'http://localhost:8000/api/v1'
 
         try:
             # Upload file
-            upload_url = 'http://localhost:8000/api/v1/documents/upload'
+            upload_url = f'{base_url}/documents/upload'
 
             # Prepare files and data
             if pdf_path:
@@ -103,12 +104,15 @@ class PDFTextExtractor:
                     logger.error(f"PDF file not found: {pdf_path}")
                     return ""
 
+                # Read file content instead of keeping file open
                 with open(pdf_path, 'rb') as f:
-                    files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-                    data = {
-                        'process_immediately': 'true',
-                        'process_directly': 'true'
-                    }
+                    file_content = f.read()
+
+                files = {'file': (os.path.basename(pdf_path), file_content, 'application/pdf')}
+                data = {
+                    'process_immediately': 'true',
+                    'process_directly': 'true'
+                }
             elif pdf_content:
                 files = {'file': ('document.pdf', pdf_content, 'application/pdf')}
                 data = {
@@ -125,7 +129,7 @@ class PDFTextExtractor:
                     upload_url,
                     files=files,
                     data=data,
-                    timeout=5
+                    timeout=10
                 )
             except (requests.ConnectionError, requests.Timeout) as conn_error:
                 logger.error(f"API Connection Error: {conn_error}")
@@ -156,36 +160,47 @@ class PDFTextExtractor:
             # Status and text retrieval with error handling
             try:
                 # Check status
-                status_url = f'http://localhost:8000/api/v1/extract/{document_id}/status'
-                status_response = requests.get(status_url, timeout=10)
+                status_url = f'{base_url}/extract/{document_id}/status'
 
                 # Wait and poll for completion
                 max_attempts = 10
                 for attempt in range(max_attempts):
-                    status_data = status_response.json()
+                    try:
+                        status_response = requests.get(status_url, timeout=10)
+                        status_data = status_response.json()
 
-                    if status_data.get('status') == 'completed':
-                        # Retrieve text
-                        text_url = f'http://localhost:8000/api/v1/documents/{document_id}/consolidated-text'
-                        text_response = requests.get(text_url, timeout=5)
+                        logger.info(f"Status Check (Attempt {attempt + 1}): {status_data}")
 
-                        text_result = text_response.json()
-                        extracted_text = text_result.get('consolidated_text', '')
+                        # Check if processing is complete
+                        if status_data.get('status') == 'completed':
+                            # Retrieve text
+                            text_url = f'{base_url}/documents/{document_id}/consolidated-text'
+                            text_response = requests.get(text_url, timeout=10)
 
-                        logger.info(f"API Extraction Successful. Text Length: {len(extracted_text)}")
-                        return extracted_text
+                            text_result = text_response.json()
+                            extracted_text = text_result.get('consolidated_text', '')
 
-                    # If not completed, wait and retry
-                    time.sleep(2)
+                            logger.info(f"API Extraction Successful. Text Length: {len(extracted_text)}")
+                            return extracted_text
+
+                        # If not completed, wait and retry
+                        if status_data.get('status') in ['queued', 'processing', 'pending']:
+                            logger.info("Document still processing. Waiting...")
+                            time.sleep(3)  # Increased wait time
+                        else:
+                            logger.warning(f"Unexpected status: {status_data.get('status')}")
+                            break
+
+                    except requests.RequestException as status_error:
+                        logger.error(f"Error checking status: {status_error}")
+                        # Wait before retrying
+                        time.sleep(3)
 
                 logger.warning("Maximum attempts reached. Processing may have failed.")
                 return ""
 
-            except requests.RequestException as e:
-                logger.error(f"API request error during status/text retrieval: {e}")
-                return ""
-            except ValueError:
-                logger.error("Failed to parse status or text response")
+            except Exception as e:
+                logger.error(f"Error during status/text retrieval: {e}")
                 return ""
 
         except Exception as e:
