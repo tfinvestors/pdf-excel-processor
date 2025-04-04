@@ -1,102 +1,78 @@
 import os
-import sys
-import logging
+import requests
+import time
+import json
 
-# Suppress verbose logging from specific libraries
-logging.getLogger('pdfminer').setLevel(logging.WARNING)
-logging.getLogger('PIL').setLevel(logging.WARNING)
-logging.getLogger('PyPDF2').setLevel(logging.WARNING)
-logging.getLogger('pdfplumber').setLevel(logging.WARNING)
-
-# Configure your main logging
-logging.basicConfig(
-    level=logging.INFO,  # or logging.ERROR if you want even less output
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-# Ensure the project root is in Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from app.pdf_processor import PDFProcessor
-from config import Config
-
-
-def test_extraction(source):
+def test_pdf_extraction(pdf_path):
     """
-    Unified test function for both local file and URL extraction
+    Comprehensive PDF extraction test
     """
-    # Validate file exists for local files
-    if not source.startswith(('http://', 'https://')):
-        if not os.path.exists(source):
-            print(f"❌ File does not exist: {source}")
-            return None
-
-    # Initialize processor with API configuration
-    pdf_processor = PDFProcessor(
-        use_ml=Config.USE_ML_MODEL,
-        debug_mode=True,
-        poppler_path=Config.POPPLER_PATH,
-        text_extraction_api_url=Config.PDF_EXTRACTION_API_URL
-    )
+    base_url = 'http://localhost:8000/api/v1'
+    upload_url = f'{base_url}/documents/upload'
 
     try:
-        # Determine extraction method based on source
-        if source.startswith(('http://', 'https://')):
-            # URL Extraction
-            print(f"\n--- URL PDF Extraction Test ---")
-            print(f"Source URL: {source}")
-            print(f"API URL: {Config.PDF_EXTRACTION_API_URL}")
+        # Upload file
+        with open(pdf_path, 'rb') as f:
+            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
+            data = {
+                'process_immediately': 'true',
+                'process_directly': 'true'
+            }
+            print(f"Uploading file: {pdf_path}")
+            upload_response = requests.post(upload_url, files=files, data=data)
 
-            # Use extract_from_url for web sources
-            extracted_text = pdf_processor.text_extractor.extract_from_url(source)
-            extraction_method = "URL API/Local Extraction"
-        else:
-            # Local File Extraction
-            print(f"\n--- Local PDF Extraction Test ---")
-            print(f"Source File: {source}")
-            print(f"API URL: {Config.PDF_EXTRACTION_API_URL}")
+        print("\n=== UPLOAD RESPONSE ===")
+        print(f"Status Code: {upload_response.status_code}")
+        upload_result = upload_response.json()
+        print(json.dumps(upload_result, indent=2))
 
-            # Print the actual method being used
-            extracted_text = pdf_processor.text_extractor.extract_from_file(source)
-            extraction_method = "Local File Extraction or API Extraction"
+        # Extract document ID
+        document_id = upload_result.get('document_id')
+        if not document_id:
+            print("No document ID received")
+            return
 
-        # Print extraction results
-        print(f"Extraction Method: {extraction_method}")
-        print(f"Text Length: {len(extracted_text)} characters")
-        print("\nFirst 500 characters:")
-        print(extracted_text[:500])
+        # Poll for status
+        timeout = 300  # 5 minutes
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            # Check status
+            status_response = requests.get(f'{base_url}/extract/{document_id}/status')
+            status_data = status_response.json()
+            print("\nStatus Check:")
+            print(json.dumps(status_data, indent=2))
 
-        # Additional checks
-        if not extracted_text:
-            print("❌ No text extracted!")
-        else:
-            print("✅ Text extraction successful!")
+            if status_data['status'] == 'completed':
+                break
+            elif status_data['status'] == 'failed':
+                print("Document processing failed")
+                return
 
-        return extracted_text
+            time.sleep(2)
+
+        # Fetch consolidated text
+        text_response = requests.get(f'{base_url}/documents/{document_id}/consolidated-text')
+
+        print("\n=== TEXT RETRIEVAL ===")
+        print(f"Status Code: {text_response.status_code}")
+        text_result = text_response.json()
+        print("Text Response:")
+        print(json.dumps(text_result, indent=2))
+
+        # Extract and print text
+        extracted_text = text_result.get('consolidated_text', '')
+        print("\n=== EXTRACTED TEXT ===")
+        print(f"Text Length: {len(extracted_text)}")
+        print("First 500 characters:")
+        # print(extracted_text[:500])
+        print(extracted_text)
 
     except Exception as e:
-        print(f"❌ Error during extraction: {e}")
-        # Log the full traceback
+        print(f"Error during extraction: {e}")
         import traceback
         traceback.print_exc()
-        return None
-
-
-def main():
-    # Test Sources - IMPORTANT: Replace with ACTUAL file paths or URLs
-    test_sources = [
-        # REPLACE with an ACTUAL PDF file path on your system
-        r"C:\Users\Lenovo\Downloads\2425-21837.pdf"
-
-        # Uncomment and replace with an actual PDF URL if testing URL extraction
-        # "https://example.com/sample.pdf"
-    ]
-
-    # Test each source
-    for source in test_sources:
-        print("\n" + "=" * 50)
-        test_extraction(source)
-
 
 if __name__ == "__main__":
-    main()
+    # Replace with your actual PDF path
+    pdf_path = r"D:\My Downloads\Cera Sanitaryware Ltd.pdf"
+    test_pdf_extraction(pdf_path)
