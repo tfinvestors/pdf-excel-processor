@@ -1,78 +1,122 @@
 import os
+import sys
 import requests
-import time
-import json
+import logging
+
+# Ensure the project root is in Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import necessary modules
+from app.pdf_processor import PDFProcessor
+from config import Config
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 
 def test_pdf_extraction(pdf_path):
     """
-    Comprehensive PDF extraction test
+    Comprehensive PDF extraction test with robust error handling
     """
-    base_url = 'http://localhost:8000/api/v1'
-    upload_url = f'{base_url}/documents/upload'
-
     try:
-        # Upload file
+        # Initialize processor with API configuration
+        pdf_processor = PDFProcessor(
+            use_ml=getattr(Config, 'USE_ML_MODEL', True),
+            debug_mode=True,
+            poppler_path=getattr(Config, 'POPPLER_PATH', None),
+            text_extraction_api_url=getattr(Config, 'PDF_EXTRACTION_API_URL',
+                                            'http://localhost:8000/api/v1/documents/upload')
+        )
+
+        # Attempt text extraction
+        try:
+            extracted_text = pdf_processor.text_extractor.extract_from_file(pdf_path)
+
+            if extracted_text:
+                print("✅ Extraction Successful:")
+                print(f"Text Length: {len(extracted_text)} characters")
+                print("\nFirst 500 characters:")
+                # print(extracted_text[:500])
+                print(extracted_text)
+
+            else:
+                print("❌ No text extracted. Fell back to local extraction.")
+
+        except Exception as extraction_error:
+            print(f"Extraction Error: {extraction_error}")
+            import traceback
+            traceback.print_exc()
+
+    except Exception as setup_error:
+        print(f"Setup Error: {setup_error}")
+        import traceback
+        traceback.print_exc()
+
+
+def manual_api_test(pdf_path):
+    """
+    Manual API test to diagnose connection issues
+    """
+    try:
+        upload_url = 'http://localhost:8000/api/v1/documents/upload'
+
         with open(pdf_path, 'rb') as f:
             files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
             data = {
                 'process_immediately': 'true',
                 'process_directly': 'true'
             }
-            print(f"Uploading file: {pdf_path}")
-            upload_response = requests.post(upload_url, files=files, data=data)
 
-        print("\n=== UPLOAD RESPONSE ===")
-        print(f"Status Code: {upload_response.status_code}")
-        upload_result = upload_response.json()
-        print(json.dumps(upload_result, indent=2))
+            print("Attempting direct API upload...")
+            try:
+                response = requests.post(upload_url, files=files, data=data, timeout=5)
 
-        # Extract document ID
-        document_id = upload_result.get('document_id')
-        if not document_id:
-            print("No document ID received")
-            return
+                print("\n=== UPLOAD RESPONSE ===")
+                print(f"Status Code: {response.status_code}")
+                print("Response Headers:")
+                for key, value in response.headers.items():
+                    print(f"  {key}: {value}")
 
-        # Poll for status
-        timeout = 300  # 5 minutes
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check status
-            status_response = requests.get(f'{base_url}/extract/{document_id}/status')
-            status_data = status_response.json()
-            print("\nStatus Check:")
-            print(json.dumps(status_data, indent=2))
+                try:
+                    print("\nResponse JSON:")
+                    print(response.json())
+                except ValueError:
+                    print("Response is not JSON")
+                    print("Response Text:")
+                    print(response.text)
 
-            if status_data['status'] == 'completed':
-                break
-            elif status_data['status'] == 'failed':
-                print("Document processing failed")
-                return
+            except requests.ConnectionError as conn_error:
+                print(f"Connection Error: {conn_error}")
+                print("Possible reasons:")
+                print("1. API service not running")
+                print("2. Incorrect port")
+                print("3. Firewall blocking connection")
+                print("4. Service not started")
 
-            time.sleep(2)
+            except requests.Timeout:
+                print("Request timed out")
 
-        # Fetch consolidated text
-        text_response = requests.get(f'{base_url}/documents/{document_id}/consolidated-text')
-
-        print("\n=== TEXT RETRIEVAL ===")
-        print(f"Status Code: {text_response.status_code}")
-        text_result = text_response.json()
-        print("Text Response:")
-        print(json.dumps(text_result, indent=2))
-
-        # Extract and print text
-        extracted_text = text_result.get('consolidated_text', '')
-        print("\n=== EXTRACTED TEXT ===")
-        print(f"Text Length: {len(extracted_text)}")
-        print("First 500 characters:")
-        # print(extracted_text[:500])
-        print(extracted_text)
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                import traceback
+                traceback.print_exc()
 
     except Exception as e:
-        print(f"Error during extraction: {e}")
+        print(f"Error in manual API test: {e}")
         import traceback
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     # Replace with your actual PDF path
     pdf_path = r"D:\My Downloads\Cera Sanitaryware Ltd.pdf"
+
+    print("=== Manual API Test ===")
+    manual_api_test(pdf_path)
+
+    print("\n=== PDF Extraction Test ===")
     test_pdf_extraction(pdf_path)
