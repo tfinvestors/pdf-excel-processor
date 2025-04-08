@@ -724,6 +724,9 @@ class PDFTextExtractor:
         if not text:
             return ""
 
+        # EMERGENCY FIX: Directly join Bajaj claim numbers that got split across lines
+        text = re.sub(r'(OC-\d+-\d+-\d+)[\s\n]+(\d+)', r'\1-\2', text)
+
         # Join broken lines in claim numbers - critical for Bajaj Allianz documents
         text = re.sub(r'(OC-\d+-\d+-\d+)[ \t]*\n[ \t]*(\d+)', r'\1-\2', text)
 

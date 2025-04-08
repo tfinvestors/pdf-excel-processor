@@ -1312,38 +1312,47 @@ class PDFProcessor:
 
 
         elif detected_provider == "bajaj_allianz":
-            # REPLACE THE EXISTING BAJAJ ALLIANZ CODE WITH THIS DEDICATED SECTION
-            logger.debug("Extracting data using Bajaj Allianz patterns")
+            # DIRECT FIX FOR BAJAJ ALLIANZ CLAIM NUMBER
+            # Look directly for the OC format claim number pattern in the full text
+            oc_pattern = r'OC-\d+-\d+-\d+-\d+|OC-\d+-\d+-\d+[-\s]+\d+'
+            oc_match = re.search(oc_pattern, text)
 
-            # Extract claim/reference number with enhanced patterns for OC format
-            claim_patterns = [
-                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                r'oc-\d+-\d+-\d+-\d+',  # Full OC pattern
-                r'(oc-\d+-\d+-\d+(?:-\d+)?)',  # OC pattern that may or may not have the last segment
-                r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
-                r'settlement\s+reference\s*:\s*(\S+)',
-            ]
+            if oc_match:
+                # Get the raw match and clean it
+                claim_raw = oc_match.group(0)
 
-            # Look for claim numbers in the table section
-            table_headers = ["Claim No", "Description", "Gross Amt", "TDS Amt"]
-            if all(header.lower() in normalized_text for header in map(str.lower, table_headers)):
-                # This looks like a table with claim information
-                table_sections = re.findall(r'(\d{4}\s+\d{1,2}/\d{1,2}/\d{2,4}.*?(?:OC-\d+-\d+-\d+[-\s]*\d+).*?\d+)',
-                                            text)
+                # Handle split claim numbers (with whitespace or newline)
+                if '-' in claim_raw and re.search(r'OC-\d+-\d+-\d+\s+\d+', claim_raw):
+                    parts = re.split(r'\s+', claim_raw)
+                    if len(parts) == 2:
+                        oc_part = parts[0]  # OC-24-1501-4089
+                        num_part = parts[1]  # 00000009
+                        data['unique_id'] = f"{oc_part}-{num_part}"
+                else:
+                    data['unique_id'] = claim_raw.replace(' ', '')
 
-                if table_sections:
-                    for section in table_sections:
-                        # Extract OC claim number from table row
-                        oc_match = re.search(r'(OC-\d+-\d+-\d+[-\s]*\d+)', section)
-                        if oc_match:
-                            # Clean up the claim number (remove spaces, ensure proper format)
-                            claim_raw = oc_match.group(1)
-                            claim_parts = re.split(r'[-\s]+', claim_raw)
-                            if len(claim_parts) >= 5:  # Should have 5 parts including the OC prefix
-                                data[
-                                    'unique_id'] = f"OC-{claim_parts[1]}-{claim_parts[2]}-{claim_parts[3]}-{claim_parts[4]}"
-                                logger.debug(f"Extracted Bajaj Allianz claim number from table: {data['unique_id']}")
-                                break
+                logger.info(f"DIRECT FIX: Extracted Bajaj claim ID: {data['unique_id']}")
+
+            # If claim number not found yet, try looking for it in specific table row
+            if 'unique_id' not in data:
+                # Look for the pattern in table line context
+                table_row_pattern = r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\d+)'
+                table_match = re.search(table_row_pattern, text)
+
+                if table_match:
+                    table_row = table_match.group(0)
+                    claim_match = re.search(r'(OC-\d+-\d+-\d+[-\s]*\d+)', table_row)
+
+                    if claim_match:
+                        claim_raw = claim_match.group(0)
+
+                        # Handle split pattern
+                        claim_clean = claim_raw.replace(' ', '-')
+                        # Ensure no double hyphens
+                        claim_clean = re.sub(r'-+', '-', claim_clean)
+
+                        data['unique_id'] = claim_clean
+                        logger.info(f"TABLE FIX: Extracted Bajaj claim ID: {data['unique_id']}")
 
             # If we didn't find a claim number in the table, try standard patterns
             if 'unique_id' not in data:
@@ -1652,33 +1661,26 @@ class PDFProcessor:
                         data_points[key] = value
                         logger.debug(f"Bank-specific extraction provided value for {key}: {value}")
 
-            # Special handling for Bajaj Allianz documents with table data
-            if detected_provider == "bajaj_allianz":
-                # Try specialized table extraction for Bajaj
-                table_data_bajaj = self.extract_table_data_from_bajaj(text)
+        # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
+        if "standard @ chartered" in text.lower() and "bajaj allianz" in text.lower():
+            # This is the specific document format we're having trouble with
+            claim_id_match = re.search(r'OC-\d+-\d+-\d+[-\s\n]*\d+', text)
+            if claim_id_match:
+                unique_id = claim_id_match.group(0).replace(' ', '-').replace('\n', '-')
+                unique_id = re.sub(r'-+', '-', unique_id)  # Fix any double hyphens
+                logger.info(f"EMERGENCY FIX: Using detected claim ID: {unique_id}")
 
-                # If we found table data with valid claim numbers, use the first one as unique_id
-                if table_data_bajaj and any('unique_id' in row for row in table_data_bajaj):
-                    for row in table_data_bajaj:
-                        if 'unique_id' in row:
-                            # Only override the unique_id if it's not already set or it looks invalid
-                            if not unique_id or unique_id == "Gross" or len(unique_id) < 5:
-                                unique_id = row['unique_id']
-                                logger.info(f"Using claim number from specialized table extraction: {unique_id}")
+                # Extract other data from REMITTANCE AMOUNT field which is reliable
+                amount_match = re.search(r'REMITTANCE AMOUNT\s*:\s*(\d+\.\d+)', text)
+                if amount_match:
+                    data_points['receipt_amount'] = amount_match.group(1)
 
-                            # Also use other data from the table row
-                            if 'receipt_amount' in row:
-                                data_points['receipt_amount'] = row['receipt_amount']
-                            if 'receipt_date' in row:
-                                data_points['receipt_date'] = row['receipt_date']
-                            if 'tds' in row:
-                                data_points['tds'] = row['tds']
-                                data_points['tds_computed'] = row.get('tds_computed', 'No')
+                date_match = re.search(r'VALUE DATE[»:]?\s*(\d{2}-[A-Za-z]{3}-\d{4})', text)
+                if date_match:
+                    data_points['receipt_date'] = date_match.group(1)
 
-                            # Also add this to the regular table_data for processing later
-                            if not any(td.get('unique_id') == row['unique_id'] for td in table_data):
-                                table_data.append(row)
-                            break
+                # Set detected provider explicitly
+                detected_provider = "bajaj_allianz"
 
         # Special handling for Bajaj Allianz documents with table data
         if detected_provider == "bajaj_allianz":
@@ -1707,6 +1709,22 @@ class PDFProcessor:
                         if not any(td.get('unique_id') == row['unique_id'] for td in table_data):
                             table_data.append(row)
                         break
+
+        # Special debugging for Bajaj Allianz documents
+        if detected_provider == "bajaj_allianz":
+            logger.info(f"Final Bajaj claim ID check: {unique_id}")
+
+            # Specific debug for this document
+            if "OC-24-1501-4089" in text:
+                logger.info("Document contains OC-24-1501-4089 pattern")
+
+            # Check for the known format in one line
+            if re.search(r'OC-24-1501-4089-00000009', text):
+                logger.info("Document contains full claim ID on single line")
+
+            # Look for the split pattern
+            if re.search(r'OC-24-1501-4089[\s\n]+00000009', text):
+                logger.info("Document contains split claim ID pattern")
 
         # THIRD PRIORITY: If bank-specific extraction didn't find everything,
         # use the original field pattern extraction
