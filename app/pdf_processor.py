@@ -2423,7 +2423,49 @@ class PDFProcessor:
                         table_data.append(row_data)
                         logger.info(f"Extracted Future Generali table row: {row_data}")
 
-        # 8. Look for table with invoice numbers and amounts (generic pattern)
+        # 8. Add specific check for HDFC ERGO format with invoice number in PAY_TYPE
+        if "hdfc ergo" in text.lower():
+            logger.info(f"Started table data exxtraction for HDFC ERGO table")
+            # More flexible pattern to match various financial year prefixes
+            # This will match patterns like 2425-XXXXX, 2526-XXXXX, etc.
+            paytype_pattern = r'PAY_TYPE\s*\|\s*Expense\s+Paid(\d{4}-\d{5})'
+            paytype_match = re.search(paytype_pattern, text)
+
+            if paytype_match:
+                invoice_no = paytype_match.group(1)
+                logger.info(f"Found HDFC ERGO invoice number: {invoice_no}")
+
+                # Extract claim number as well for potential matching
+                claim_pattern = r'Claim\s+No\s*\|\s*(C\d+(-\d+)?)'
+                claim_match = re.search(claim_pattern, text)
+                claim_no = None
+
+                if claim_match:
+                    claim_no = claim_match.group(1)
+                    logger.info(f"Found HDFC ERGO claim number: {claim_no}")
+
+                # Don't override the unique_id - we'll try both identifiers in find_row_by_identifiers
+
+                # Add both identifiers to table_data
+                row_data = {
+                    'unique_id': claim_no if claim_no else unique_id,  # Primary ID remains claim number if available
+                    'invoice_no': invoice_no,  # Also store invoice number
+                    'receipt_amount': data_points.get('receipt_amount', ''),
+                    'receipt_date': data_points.get('receipt_date', '')
+                }
+
+                if 'tds' in data_points:
+                    row_data['tds'] = data_points['tds']
+                    row_data['tds_computed'] = data_points.get('tds_computed', 'No')
+
+                # Add this row to table data if not already present
+                if not any(td.get('invoice_no') == invoice_no for td in table_data):
+                    table_data.append(row_data)
+
+                # Also add invoice_no to data_points for matching
+                data_points['invoice_no'] = invoice_no
+
+        # 9. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -2441,7 +2483,7 @@ class PDFProcessor:
 
                 table_data.append(row_data)
 
-        # 9. Generic pattern for invoice numbers followed by amounts
+        # 10. Generic pattern for invoice numbers followed by amounts
         generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
                                   re.IGNORECASE)
         for row in generic_rows:

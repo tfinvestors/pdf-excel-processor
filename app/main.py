@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 import traceback
 import json
+import re
 
 from config import Config
 
@@ -240,6 +241,19 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             # Use this row's unique_id for the whole document
                             unique_id = claim_rows[0]['unique_id']
                             logger.info(f"Using Future Generali claim ID from table: {unique_id}")
+
+                            # Set the correct receipt_amount in data_points
+                            receipt_amount = claim_rows[0]['receipt_amount'].lstrip('0')
+                            if receipt_amount.startswith('.'):
+                                receipt_amount = '0' + receipt_amount
+                            data_points['receipt_amount'] = receipt_amount
+                            logger.info(f"Using receipt amount from Claims Payment row: {receipt_amount}")
+
+                            # Update all table rows to use this unique_id
+                            for row in table_data:
+                                row['unique_id'] = unique_id
+                                # Set the correct receipt_amount in all table rows too
+                                row['receipt_amount'] = receipt_amount
 
                             # For each row in table_data, update the unique_id to this claim ID
                             # This ensures all rows get matched to the same Excel row
