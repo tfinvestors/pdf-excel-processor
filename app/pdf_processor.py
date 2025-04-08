@@ -1312,50 +1312,64 @@ class PDFProcessor:
 
 
         elif detected_provider == "bajaj_allianz":
-            # DIRECT FIX FOR BAJAJ ALLIANZ CLAIM NUMBER
-            # Look directly for the OC format claim number pattern in the full text
-            oc_pattern = r'OC-\d+-\d+-\d+-\d+|OC-\d+-\d+-\d+[-\s]+\d+'
-            oc_match = re.search(oc_pattern, text)
+            logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            if oc_match:
-                # Get the raw match and clean it
-                claim_raw = oc_match.group(0)
-
-                # Handle split claim numbers (with whitespace or newline)
-                if '-' in claim_raw and re.search(r'OC-\d+-\d+-\d+\s+\d+', claim_raw):
-                    parts = re.split(r'\s+', claim_raw)
-                    if len(parts) == 2:
-                        oc_part = parts[0]  # OC-24-1501-4089
-                        num_part = parts[1]  # 00000009
-                        data['unique_id'] = f"{oc_part}-{num_part}"
-                else:
-                    data['unique_id'] = claim_raw.replace(' ', '')
-
-                logger.info(f"DIRECT FIX: Extracted Bajaj claim ID: {data['unique_id']}")
-
-            # If claim number not found yet, try looking for it in specific table row
-            if 'unique_id' not in data:
-                # Look for the pattern in table line context
-                table_row_pattern = r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\d+)'
-                table_match = re.search(table_row_pattern, text)
+            # APPROACH 1: Standard Chartered specific fix
+            if "standard @ chartered" in text.lower() or "standard chartered" in text.lower():
+                # Check for table row with specific format
+                table_row_pattern = r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\n\s*\d{8})'
+                table_match = re.search(table_row_pattern, text, re.DOTALL)
 
                 if table_match:
+                    # Get the table row content
                     table_row = table_match.group(0)
-                    claim_match = re.search(r'(OC-\d+-\d+-\d+[-\s]*\d+)', table_row)
 
-                    if claim_match:
-                        claim_raw = claim_match.group(0)
+                    # First extract the OC base pattern
+                    base_match = re.search(r'(OC-\d+-\d+-\d+)', table_row)
+                    if base_match:
+                        base_id = base_match.group(1)
 
-                        # Handle split pattern
-                        claim_clean = claim_raw.replace(' ', '-')
-                        # Ensure no double hyphens
-                        claim_clean = re.sub(r'-+', '-', claim_clean)
+                        # Then look for the 8-digit continuation on the next line
+                        cont_match = re.search(r'\n\s*(\d{8})', table_row)
+                        if cont_match:
+                            continuation = cont_match.group(1)
+                            data['unique_id'] = f"{base_id}-{continuation}"
+                            logger.info(f"DIRECT FIX: Extracted Bajaj claim ID: {data['unique_id']}")
 
-                        data['unique_id'] = claim_clean
-                        logger.info(f"TABLE FIX: Extracted Bajaj claim ID: {data['unique_id']}")
-
-            # If we didn't find a claim number in the table, try standard patterns
+            # APPROACH 2: More general OC pattern matching if unique_id not yet found
             if 'unique_id' not in data:
+                # Look directly for the OC format claim number pattern in the full text
+                oc_pattern = r'OC-\d+-\d+-\d+-\d+|OC-\d+-\d+-\d+[-\s\n]*\d{8}'  # Specifically match 8-digit continuation
+                oc_match = re.search(oc_pattern, text)
+
+                if oc_match:
+                    # Clean up any spaces or newlines in the matched pattern
+                    claim_raw = oc_match.group(0)
+                    data['unique_id'] = re.sub(r'[\s\n]+', '-', claim_raw)
+                    logger.debug(f"Extracted Bajaj Allianz claim number using OC pattern: {data['unique_id']}")
+                else:
+                    # Try more specific pattern to capture the exact structure from the table row
+                    table_pattern = r'OC-\d+-\d+-\d+.*?\n.*?(\d{8})'
+                    table_match = re.search(table_pattern, text, re.DOTALL)
+
+                    if table_match:
+                        # Extract the base OC pattern
+                        base_match = re.search(r'(OC-\d+-\d+-\d+)', text)
+                        if base_match:
+                            # Build the complete ID from parts
+                            data['unique_id'] = f"{base_match.group(1)}-{table_match.group(1)}"
+                            logger.info(f"Table-based extraction for Bajaj claim ID: {data['unique_id']}")
+
+            # APPROACH 3: Fall back to original patterns if still no unique_id
+            if 'unique_id' not in data:
+                claim_patterns = [
+                    r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                    r'oc-\d+-\d+-\d+-\d+',  # Full OC pattern
+                    r'(oc-\d+-\d+-\d+(?:-\d+)?)',  # OC pattern that may or may not have the last segment
+                    r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
+                    r'settlement\s+reference\s*:\s*(\S+)',
+                ]
+
                 for pattern in claim_patterns:
                     claim_match = re.search(pattern, text, re.IGNORECASE)
                     if claim_match:
@@ -1663,12 +1677,17 @@ class PDFProcessor:
 
         # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
         if "standard @ chartered" in text.lower() and "bajaj allianz" in text.lower():
-            # This is the specific document format we're having trouble with
-            claim_id_match = re.search(r'OC-\d+-\d+-\d+[-\s\n]*\d+', text)
-            if claim_id_match:
-                unique_id = claim_id_match.group(0).replace(' ', '-').replace('\n', '-')
-                unique_id = re.sub(r'-+', '-', unique_id)  # Fix any double hyphens
-                logger.info(f"EMERGENCY FIX: Using detected claim ID: {unique_id}")
+            # Look for "OC-24-1501-4089" pattern
+            oc_base = re.search(r'(OC-\d+-\d+-\d+)', text)
+
+            # Look for "00000009" pattern that appears near the beginning of a line
+            # after OC pattern (this is very specific to this document layout)
+            cont_pattern = r'\n\s*(\d{8})'
+            cont_match = re.search(cont_pattern, text[oc_base.end():oc_base.end() + 100])
+
+            if oc_base and cont_match:
+                unique_id = f"{oc_base.group(1)}-{cont_match.group(1)}"
+                logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
 
                 # Extract other data from REMITTANCE AMOUNT field which is reliable
                 amount_match = re.search(r'REMITTANCE AMOUNT\s*:\s*(\d+\.\d+)', text)
