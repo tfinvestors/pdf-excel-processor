@@ -438,8 +438,36 @@ class ExcelHandler:
         if row_index is None or not data_points:
             return False, [], list(data_points.keys())
 
+        if 'receipt_amount' in data_points and data_points['receipt_amount']:
+            # Check if receipt_amount might be an ID (too many digits for a typical amount)
+            if len(str(data_points['receipt_amount'])) > 10 and str(data_points['receipt_amount']).isdigit():
+                logger.warning(f"Receipt amount {data_points['receipt_amount']} looks like an ID, not an amount")
+
+                # Try to extract from PDF text directly
+                if pdf_text:
+                    # For New India, try to get the TOTAL amount
+                    total_match = re.search(r'TOTAL:\s*([\d,\.]+)', pdf_text)
+                    if total_match:
+                        data_points['receipt_amount'] = total_match.group(1).replace(',', '')
+                        logger.info(f"Corrected amount to {data_points['receipt_amount']} from TOTAL")
+
         if 'receipt_amount' in data_points:
             logger.info(f"IMPORTANT DEBUG - Initial receipt_amount in data_points: {data_points['receipt_amount']}")
+
+            # Look for specific patterns in PDF text to verify the amount is correct
+            if pdf_text and "New India Assurance" in pdf_text:
+                # Extract the TOTAL amount from New India payment advice
+                total_match = re.search(r'TOTAL:\s*([\d,\.]+)', pdf_text)
+                if total_match:
+                    correct_amount = total_match.group(1).replace(',', '')
+                    logger.info(f"Found TOTAL amount in New India advice: {correct_amount}")
+
+                    # Compare with current amount and use the TOTAL if it's different
+                    if data_points['receipt_amount'] != correct_amount:
+                        logger.warning(
+                            f"Correcting receipt_amount from {data_points['receipt_amount']} to {correct_amount}")
+                        data_points['receipt_amount'] = correct_amount
+
 
         # Fix European number format in receipt_amount
         if 'receipt_amount' in data_points and data_points['receipt_amount']:

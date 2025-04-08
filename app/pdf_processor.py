@@ -1103,7 +1103,10 @@ class PDFProcessor:
 
             # Extract amount
             amount_patterns = [
-                r'we have instructed our bank to remit an amount of Rs\.([0-9,.]+)',
+                r'TOTAL:\s*([\d,\.]+)',  # Add this pattern to prioritize the TOTAL amount
+                r'an amount of Rs\.([\d,\.]+)',
+                r'remit an amount of Rs\.([\d,\.]+)',
+                r'we have instructed our bank to remit an amount of rs\.([\d,\.]+)',
                 r'amount\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
                 r'amt\s*(?:Rs\.?|INR)?\s*([0-9,.]+)',
             ]
