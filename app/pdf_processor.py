@@ -1679,6 +1679,26 @@ class PDFProcessor:
                         data_points[key] = value
                         logger.debug(f"Bank-specific extraction provided value for {key}: {value}")
 
+        # ICICI Lombard specific method to extract data points
+        if "CLAIM_REF_NO" in text and "LAE Invoice No" in text and "TRF AMOUNT" in text:
+            logger.info("Detected ICICI Lombard claim table format")
+
+            # Extract first row's data from the table for primary identification
+            claim_ref_match = re.search(r'CLAIM_REF_NO.*?\n(ENG\d+)', text, re.IGNORECASE)
+            invoice_match = re.search(r'LAE Invoice No.*?\n.*?(2425-\d{5})', text, re.IGNORECASE)
+
+            if claim_ref_match:
+                unique_id = claim_ref_match.group(1).strip()
+                logger.info(f"Using claim reference number as unique ID: {unique_id}")
+
+                # Also store invoice number for fallback matching
+                if invoice_match:
+                    data_points['invoice_no'] = invoice_match.group(1).strip()
+                    logger.info(f"Extracted invoice number: {data_points['invoice_no']}")
+
+                # Set the provider for TDS calculation
+                detected_provider = "icici_lombard"
+
         # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
         if "standard @ chartered" in text.lower() and "bajaj allianz" in text.lower():
             # Look for "OC-24-1501-4089" pattern
@@ -2294,33 +2314,39 @@ class PDFProcessor:
 
         # 4. ICICI Lombard reference table
         icici_table_match = re.search(
-            r'CLAIM_REF_NO\s+LAE\s+Invoice\s+No\s+Bill\s+Date\s+Invoice\s+Amt\s+TDS\s+TRF\s+AMOUNT', text,
-            re.IGNORECASE)
+            r'CLAIM_REF_NO\s+LAE\s+Invoice\s+No\s+Bill\s+Date\s+Invoice\s+Amt\s+TDS\s+TRF\s+AMOUNT\s+RECEIPT\s+DATE',
+            text, re.IGNORECASE)
+
         if icici_table_match:
-            # Extract rows using regex pattern
+            logger.info("Detected ICICI Lombard table format with receipt date")
+
+            # Use a more flexible pattern that can handle different date formats and number formats
             rows = re.findall(
-                r'(ENG\d{9})\s+(2425-\d{5})\s+(\d{2}/\d{2}/\d{4})\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'(ENG\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
                 text)
 
-            for row in rows:
-                claim_ref, invoice_no, bill_date, invoice_amt, tds, trf_amount = row
+            if rows:
+                logger.info(f"Extracted {len(rows)} rows from ICICI Lombard table")
 
-                # Convert date format from DD/MM/YYYY to DD-MM-YYYY
-                date_parts = bill_date.split('/')
-                formatted_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}" if len(
-                    date_parts) == 3 else bill_date
+                for row in rows:
+                    claim_ref, invoice_no, bill_date, invoice_amt, tds, trf_amount, receipt_date = row
 
-                table_data.append({
-                    'unique_id': claim_ref.strip(),
-                    'invoice_no': invoice_no.strip(),
-                    'receipt_date': formatted_date.strip(),
-                    'invoice_amt': invoice_amt.strip().replace(',', ''),
-                    'tds': tds.strip().replace(',', ''),
-                    'receipt_amount': trf_amount.strip().replace(',', ''),
-                    'tds_computed': 'No'  # TDS already present in document
-                })
+                    # Transform amounts - remove commas and ensure proper format
+                    receipt_amount = trf_amount.replace(',', '')
+                    tds_amount = tds.replace(',', '')
 
-            logger.info(f"Extracted {len(table_data)} rows from ICICI Lombard table")
+                    # Create row data with both identifiers
+                    row_data = {
+                        'unique_id': claim_ref.strip(),  # Primary ID is the claim reference
+                        'invoice_no': invoice_no.strip(),  # Store invoice number for fallback matching
+                        'receipt_date': receipt_date.strip(),
+                        'receipt_amount': receipt_amount.strip(),
+                        'tds': tds_amount.strip(),
+                        'tds_computed': 'No'  # TDS is already in the document
+                    }
+
+                    table_data.append(row_data)
+                    logger.info(f"Added ICICI Lombard table row: {claim_ref} / {invoice_no}")
 
         # 5. Zion reference table (spotted in sample 34)
         zion_table_match = re.search(r'DATE\s+ZION\s+REF\s+NO\.\s+bill\s+no\s+(?:amt|Bill\s+Amount)', text,
@@ -2450,20 +2476,12 @@ class PDFProcessor:
                 row_data = {
                     'unique_id': claim_no if claim_no else unique_id,  # Primary ID remains claim number if available
                     'invoice_no': invoice_no,  # Also store invoice number
-                    'receipt_amount': data_points.get('receipt_amount', ''),
-                    'receipt_date': data_points.get('receipt_date', '')
                 }
 
-                if 'tds' in data_points:
-                    row_data['tds'] = data_points['tds']
-                    row_data['tds_computed'] = data_points.get('tds_computed', 'No')
+                # Add this row to table data
+                table_data.append(row_data)
 
-                # Add this row to table data if not already present
-                if not any(td.get('invoice_no') == invoice_no for td in table_data):
-                    table_data.append(row_data)
-
-                # Also add invoice_no to data_points for matching
-                data_points['invoice_no'] = invoice_no
+        return table_data
 
         # 9. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)

@@ -217,6 +217,9 @@ class ExcelHandler:
             return None
 
         try:
+            # Initialize match_found variable (fix for the undefined variable error)
+            match_found = False  # Add this line to fix the error
+
             # Log the unique_id for debugging
             logger.info(f"Attempting to match ID: {unique_id}")
 
@@ -224,6 +227,17 @@ class ExcelHandler:
             # Remove any unwanted characters that might interfere with matching
             cleaned_id = re.sub(r'[^A-Za-z0-9/-]', '', unique_id)
             logger.info(f"Cleaned ID for matching: {cleaned_id}")
+
+            # Check if this is an ICICI Lombard document with "ENG" pattern
+            if unique_id.startswith("ENG") or (
+                    pdf_text and "CLAIM_REF_NO" in pdf_text and "LAE Invoice No" in pdf_text):
+                # For ICICI Lombard documents, try both claim ref and invoice number
+                invoice_no = data_points.get('invoice_no')
+                if invoice_no:
+                    logger.info(f"Found invoice number in data_points: {invoice_no}")
+
+                # Use the match_with_fallback method for better matching
+                return self.match_with_fallback(cleaned_id, invoice_no, cleaned_id)
 
             # Extract just the numeric part if it's a complex ID
             numeric_part = re.sub(r'[^0-9]', '', unique_id)
@@ -255,6 +269,33 @@ class ExcelHandler:
                 logger.info(f"Invoice parts: {invoice_parts}")
                 logger.info(f"Invoice prefix: {invoice_prefix}")
                 logger.info(f"Invoice number: {invoice_number}")
+
+            # First check if we have an invoice_no field in data_points (HDFC ERGO specific case)
+            if 'invoice_no' in data_points and data_points['invoice_no']:
+                invoice_id = data_points['invoice_no']
+                logger.info(f"Found invoice number in data_points: {invoice_id}")
+
+                # Try exact match on invoice column
+                if self.invoice_column is not None:
+                    column_series = self.df[self.invoice_column].astype(str)
+                    exact_matches = column_series[column_series == invoice_id]
+                    if not exact_matches.empty:
+                        index = exact_matches.index[0]
+                        logger.info(f"Found exact match for invoice_no in column {self.invoice_column} at row {index}")
+                        return index
+
+            # If no match found and we have an invoice number, try matching that (ICICI specific case)
+            if 'invoice_no' in data_points and data_points['invoice_no']:
+                logger.info(f"Trying to match using invoice number: {data_points['invoice_no']}")
+
+                if self.invoice_column is not None:
+                    column_series = self.df[self.invoice_column].astype(str)
+                    exact_matches = column_series[column_series == data_points['invoice_no']]
+                    if not exact_matches.empty:
+                        index = exact_matches.index[0]
+                        logger.info(
+                            f"Found exact match for invoice number in column {self.invoice_column} at row {index}")
+                        return index
 
             # Try each column with exact matching first - STRICT MATCHING ONLY
             for column in [self.invoice_column, self.client_ref_column]:
@@ -308,6 +349,19 @@ class ExcelHandler:
                 sample_values = self.df[self.client_ref_column].astype(str).head(5).tolist()
                 logger.info(f"Column '{self.client_ref_column}' first 5 values: {sample_values}")
 
+            # As a final fallback, try using invoice_no from data_points
+            if 'invoice_no' in data_points and data_points['invoice_no']:
+                invoice_no = data_points['invoice_no']
+                logger.info(f"Found invoice number in data_points: {invoice_no}")
+                if self.invoice_column is not None:
+                    column_series = self.df[self.invoice_column].astype(str)
+                    invoice_matches = column_series[column_series == invoice_no]
+                    if not invoice_matches.empty:
+                        index = invoice_matches.index[0]
+                        logger.info(
+                            f"Found match using invoice number in column {self.invoice_column} at row {index}")
+                        return index
+
             # No exact match found - that's all we try with strict matching
             logger.warning(f"No exact match found for ID: {unique_id}")
             return None
@@ -315,6 +369,54 @@ class ExcelHandler:
         except Exception as e:
             logger.error(f"Error finding row by ID: {str(e)}")
             return None
+
+
+    def match_with_fallback(self, unique_id, invoice_no=None, claim_ref=None):
+        """
+        Try multiple matching strategies to find the correct Excel row.
+
+        Args:
+            unique_id (str): The primary unique identifier
+            invoice_no (str, optional): Invoice number for fallback matching
+            claim_ref (str, optional): Claim reference for fallback matching
+
+        Returns:
+            int or None: Index of the matching row, or None if no match found
+        """
+        # First try unique ID in both columns
+        if unique_id:
+            logger.info(f"Trying to match with unique ID: {unique_id}")
+            for column in [self.invoice_column, self.client_ref_column]:
+                if column is not None:
+                    column_series = self.df[column].astype(str)
+                    exact_matches = column_series[column_series == unique_id]
+                    if not exact_matches.empty:
+                        index = exact_matches.index[0]
+                        logger.info(f"Found exact match for unique ID in column {column} at row {index}")
+                        return index
+
+        # Then try invoice number specifically in invoice column
+        if invoice_no and self.invoice_column:
+            logger.info(f"Trying to match with invoice number: {invoice_no}")
+            column_series = self.df[self.invoice_column].astype(str)
+            matches = column_series[column_series == invoice_no]
+            if not matches.empty:
+                index = matches.index[0]
+                logger.info(f"Found match for invoice number in column {self.invoice_column} at row {index}")
+                return index
+
+        # Then try claim reference specifically in client ref column
+        if claim_ref and self.client_ref_column:
+            logger.info(f"Trying to match with claim reference: {claim_ref}")
+            column_series = self.df[self.client_ref_column].astype(str)
+            matches = column_series[column_series == claim_ref]
+            if not matches.empty:
+                index = matches.index[0]
+                logger.info(f"Found match for claim reference in column {self.client_ref_column} at row {index}")
+                return index
+
+        logger.warning(f"No match found for ID: {unique_id}, invoice: {invoice_no}, claim ref: {claim_ref}")
+        return None
 
     def update_row_with_data(self, row_index, data_points, pdf_text=None, detected_provider=None):
         """

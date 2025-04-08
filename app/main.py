@@ -167,6 +167,50 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     results['files']['unprocessed'].append(pdf_file)
                     continue
 
+                # Special handling for ICICI Lombard table documents
+                if "CLAIM_REF_NO" in extracted_text and "LAE Invoice No" in extracted_text and "TRF AMOUNT" in extracted_text:
+                    if status_callback:
+                        status_callback(f"📊 Detected ICICI Lombard claim table in {pdf_file}")
+
+                    # Extract table data directly from the structured format
+                    table_data = []
+
+                    # Use the regex pattern to extract rows
+                    rows = re.findall(
+                        r'(ENG\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
+                        extracted_text)
+
+                    for row in rows:
+                        claim_ref, invoice_no, bill_date, invoice_amt, tds, trf_amount, receipt_date = row
+
+                        # Add to table data
+                        table_data.append({
+                            'unique_id': claim_ref.strip(),
+                            'invoice_no': invoice_no.strip(),
+                            'receipt_date': receipt_date.strip(),
+                            'receipt_amount': trf_amount.strip().replace(',', ''),
+                            'tds': tds.strip().replace(',', ''),
+                            'tds_computed': 'No'  # TDS already in document
+                        })
+
+                    if table_data:
+                        if status_callback:
+                            status_callback(f"📋 Found {len(table_data)} claim entries in table")
+
+                        # Process the table data
+                        table_results = excel_handler.process_multi_row_data(table_data, extracted_text)
+
+                        if table_results['processed'] > 0:
+                            if status_callback:
+                                status_callback(
+                                    f"✅ Processed {table_results['processed']} of {table_results['total']} rows from table")
+
+                            # Move to processed folder if at least one row was successful
+                            move_to_appropriate_folder(pdf_path, True, processed_dir, unprocessed_dir)
+                            results['processed'] += 1
+                            results['files']['processed'].append(pdf_file)
+                            continue
+
                 # Extract data with proper error handling
                 try:
                     # Extract data points with better error handling
@@ -284,6 +328,8 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                         results['files']['unprocessed'].append(pdf_file)
 
                     continue  # Skip the single row processing since we've processed the table
+
+
 
                 # Case 2: The PDF contains a single row of data (standard case)
                 if not unique_id:
