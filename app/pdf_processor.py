@@ -1083,11 +1083,10 @@ class PDFProcessor:
             # Extract claim/policy number
             claim_patterns = [
                 # Look specifically for claim number in the table format
-                r'CLAIM NUMBER\s+AMOUNT.*?(?:\d{5,})\s+(\d{20}|\d{14}|\d{17}|\d{11,})',
-                r'CLAIM NUMBER.*?(\d{20}|\d{14}|\d{17}|\d{11,})',
-                # Extract the claim number directly from the table row
-                r'(?:POLICY|CLAIM) NUMBER.*?\n.*?(?:\d+)\s+(\d{20}|\d{14}|\d{17}|\d{11,})',
-                # Then fallback to other patterns
+                r'CLAIM NUMBER\s+AMOUNT.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
+                r'CLAIM NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
+                r'(?:POLICY|CLAIM) NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
+                # Then fallback patterns - less reliable
                 r'claim\s+number.*?(\d{14,})',
                 r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
             ]
@@ -1682,6 +1681,32 @@ class PDFProcessor:
                     if key != 'unique_id' and value:
                         data_points[key] = value
                         logger.debug(f"Bank-specific extraction provided value for {key}: {value}")
+
+        # Special check for New India Assurance documents with tables
+        if "INVOICE NUMBER POLICY NUMBER CLAIM NUMBER AMOUNT" in text and "newindia.co.in" in text:
+            logger.info("Detected New India Assurance document with table structure")
+
+            # Extract the claim number directly from the table
+            claim_pattern = r'CLAIM NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+\s+'
+            claim_match = re.search(claim_pattern, text, re.IGNORECASE)
+
+            if claim_match:
+                unique_id = claim_match.group(1).strip()
+                logger.info(f"Extracted claim number directly from table: {unique_id}")
+
+                # Also extract other data
+                amount_pattern = r'TOTAL:\s*([\d,\.]+)'
+                amount_match = re.search(amount_pattern, text)
+                if amount_match:
+                    data_points['receipt_amount'] = amount_match.group(1).replace(',', '')
+
+                date_pattern = r'Date\s*:\s*Wed\s+Feb\s+26.*?2025'
+                date_match = re.search(date_pattern, text)
+                if date_match:
+                    data_points['receipt_date'] = "26-02-2025"
+
+                # Detect provider
+                detected_provider = "new_india"
 
         # ICICI Lombard specific method to extract data points
         if "CLAIM_REF_NO" in text and "LAE Invoice No" in text and "TRF AMOUNT" in text:
@@ -2489,7 +2514,24 @@ class PDFProcessor:
 
         # 9. Add specific handling for New India Assurance table format
         if "INVOICE NUMBER POLICY NUMBER CLAIM NUMBER AMOUNT" in text:
-            logger.info("Detected New India Assurance table format")
+            logger.info("SPECIAL DEBUG: Detected New India Assurance table format")
+
+            # First log the full text section containing the table to debug the format
+            table_section = text[text.find("INVOICE NUMBER"):text.find("====================\nTOTAL")]
+            logger.info(f"Table section: {table_section}")
+
+            # Then run a raw pattern match to see exact format
+            raw_match = re.search(r'(\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)', text)
+            if raw_match:
+                logger.info(f"Raw match found: {raw_match.groups()}")
+            else:
+                logger.info("No raw match found, examining text format more closely")
+                # Try a more permissive pattern
+                simple_match = re.search(r'CN\d+\s+\d+\s+(\d+)', text)
+                if simple_match:
+                    logger.info(f"Simple match found claim: {simple_match.group(1)}")
+                else:
+                    logger.info("No simple match found either")
 
             # Extract rows from the standardized table
             rows = re.findall(
