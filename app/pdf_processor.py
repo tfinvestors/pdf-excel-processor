@@ -242,14 +242,63 @@ class PDFProcessor:
     def extract_cera_invoice_numbers(self, text):
         """
         Specialized method to extract Cera invoice numbers and table data from OCR text.
-        Uses pattern recognition without hardcoded values.
+        Uses specific pattern matching for Cera's structured table format.
         """
         logger.info("Using specialized Cera invoice extraction")
 
         invoice_numbers = []
         table_data = []
 
-        # 1. First extract the Net Total - it's a reliable anchor point
+        # 1. First look specifically for the Cera structured table format
+        structured_table_pattern = r'Document\s+No\.\s+Bill\s+No\.\s+Bill\s+Date\s+Gross\s+Amount\s+TDS\s+Amount\s+Net\s+Amount'
+        structured_table_match = re.search(structured_table_pattern, text, re.IGNORECASE)
+
+        if structured_table_match:
+            logger.info("Found structured Cera invoice table")
+            table_content = text[structured_table_match.end():]
+
+            # Find where the table ends (typically at "Net Total")
+            table_end = re.search(r'Net\s+Total', table_content)
+            if table_end:
+                table_content = table_content[:table_end.start()]
+
+            # Look for rows with exact column structure matching Cera invoices
+            # This pattern specifically captures DocNo, BillNo, Date, Gross, TDS, Net in that order
+            row_pattern = r'(\d+)\s+(\d{4}-\d{5})\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+(\d{1,3}(?:[,.]\d{3})*(?:\.\d{2}))\s+(\d{1,3}(?:[,.]\d{3})*(?:\.\d{2}))\s+(\d{1,3}(?:[,.]\d{3})*(?:\.\d{2}))'
+
+            # Find all matching rows - each match will have 6 groups: docno, billno, date, gross, tds, net
+            rows = re.findall(row_pattern, table_content)
+
+            if rows:
+                logger.info(f"Found {len(rows)} structured Cera invoice rows")
+                for row in rows:
+                    doc_no, bill_no, bill_date, gross_amount, tds_amount, net_amount = row
+
+                    # Clean and format the values
+                    date_parts = bill_date.split('.')
+                    if len(date_parts) == 3:
+                        formatted_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}"
+                    else:
+                        formatted_date = bill_date
+
+                    # Create table data with the correct NET amount (not TDS)
+                    row_data = {
+                        'unique_id': bill_no,
+                        'receipt_date': formatted_date,
+                        'receipt_amount': net_amount.replace(',', ''),  # NET AMOUNT (not TDS)
+                        'tds': tds_amount.replace(',', ''),
+                        'tds_computed': 'No'  # We have the actual TDS from the document
+                    }
+
+                    invoice_numbers.append(bill_no)
+                    table_data.append(row_data)
+                    logger.info(f"Created structured row for bill {bill_no} with net amount {net_amount}")
+
+                # If we've found and processed structured rows, return immediately
+                if table_data:
+                    return invoice_numbers, table_data
+
+        # 2. Extract the Net Total - it's a reliable anchor point
         net_total_patterns = [
             r'Net\s*Total\s*(?:Rs\.?|INR)?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)',
             r'NetTotal\s*T?Y?\s*(\d{1,3}(?:[,.]\d{3})*(?:[,.]\d{1,2})?)'
@@ -263,7 +312,7 @@ class PDFProcessor:
                 logger.info(f"Extracted Net Total amount: {net_total}")
                 break
 
-        # 2. Extract document date with flexible pattern matching
+        # 3. Extract document date with flexible pattern matching
         date_patterns = [
             r'Document\s*No\.\s*/\s*Date\s*.*?(\d{1,2}\.\d{1,2}\.\d{4})',
             r'payment\s*made\s*on\s*(\d{1,2}\.\d{1,2}\.\d{4})',
@@ -278,7 +327,7 @@ class PDFProcessor:
                 logger.info(f"Extracted document date: {document_date}")
                 break
 
-        # 3. Find the table section by looking for key headers
+        # 4. Find the table section by looking for key headers
         table_section = None
         table_markers = [
             "Bill No.", "Document No.", "Gross Amount", "TDS Amount", "Net Amount",
@@ -297,9 +346,41 @@ class PDFProcessor:
                 logger.info(f"Found table section using marker '{marker}'")
                 break
 
-        # 4. Use document structure analysis to identify the bill number pattern in use
-        # Analyze the document to find what pattern is used for bill numbers
+        # 5. Try targeted pattern extraction for table section if we have one
+        if table_section:
+            logger.info("Attempting to extract from table section using targeted pattern")
+            # This pattern specifically targets the table structure in Cera documents
+            # Looking for DocNo BillNo Date Gross TDS Net format
+            targeted_pattern = r'(\d+)\s+(\d{4}-\d{5})\s+(\d{1,2}\.\d{1,2}\.\d{4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})\s+(\d+\.\d{2})'
+            targeted_matches = re.findall(targeted_pattern, table_section)
 
+            if targeted_matches:
+                logger.info(f"Found {len(targeted_matches)} rows using targeted pattern")
+                for match in targeted_matches:
+                    doc_no, bill_no, date, gross, tds, net = match
+                    # Format date
+                    date_parts = date.split('.')
+                    if len(date_parts) == 3:
+                        formatted_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}"
+                    else:
+                        formatted_date = date
+
+                    row_data = {
+                        'unique_id': bill_no,
+                        'receipt_date': formatted_date,
+                        'receipt_amount': net,  # IMPORTANT: Use NET AMOUNT
+                        'tds': tds,
+                        'tds_computed': 'No'
+                    }
+
+                    # Only add if not already in table_data
+                    if bill_no not in [row.get('unique_id') for row in table_data]:
+                        table_data.append(row_data)
+                        if bill_no not in invoice_numbers:
+                            invoice_numbers.append(bill_no)
+                        logger.info(f"Added targeted row for bill {bill_no} with net amount {net}")
+
+        # 6. Use document structure analysis to identify the bill number pattern in use
         # First look for any pattern that appears to be a bill number
         # (typically 4 digits, dash, 5 digits)
         bill_patterns = [
@@ -309,22 +390,24 @@ class PDFProcessor:
 
         all_potential_bills = []
 
-        for pattern in bill_patterns:
-            matches = re.findall(pattern, text)
-            all_potential_bills.extend(matches)
+        # Only look for more bill numbers if we haven't found any yet
+        if not invoice_numbers:
+            for pattern in bill_patterns:
+                matches = re.findall(pattern, text)
+                all_potential_bills.extend(matches)
 
-        # Clean up potential bill numbers
-        if all_potential_bills:
-            for bill in all_potential_bills:
-                # Apply OCR error corrections
-                clean_bill = self._correct_ocr_errors(bill)
+            # Clean up potential bill numbers
+            if all_potential_bills:
+                for bill in all_potential_bills:
+                    # Apply OCR error corrections
+                    clean_bill = self._correct_ocr_errors(bill)
 
-                # Only add if it seems like a valid bill number
-                if re.match(r'\d{4}-\d{5}', clean_bill):
-                    invoice_numbers.append(clean_bill)
-                    logger.info(f"Extracted bill number: {clean_bill}")
+                    # Only add if it seems like a valid bill number
+                    if re.match(r'\d{4}-\d{5}', clean_bill) and clean_bill not in invoice_numbers:
+                        invoice_numbers.append(clean_bill)
+                        logger.info(f"Extracted bill number: {clean_bill}")
 
-        # 5. If we still don't have invoice numbers, try to identify them from context
+        # 7. If we still don't have invoice numbers, try to identify them from context
         if not invoice_numbers and table_section:
             # Look for the Bill No. column and extract values
             bill_column_pattern = r'Bill\s*No\.'
@@ -340,77 +423,80 @@ class PDFProcessor:
                     clean_value = self._correct_ocr_errors(value)
 
                     # Only add if it seems like a valid bill number
-                    if re.match(r'\d{4}-\d{5}', clean_value):
+                    if re.match(r'\d{4}-\d{5}', clean_value) and clean_value not in invoice_numbers:
                         invoice_numbers.append(clean_value)
                         logger.info(f"Extracted bill number from column: {clean_value}")
 
-        # 6. Extract amounts from the table section
-        if table_section:
-            # Find all decimal amounts
-            amount_pattern = r'(\d{1,4}[,.]\d{2})'
-            amount_matches = re.findall(amount_pattern, table_section)
+        # 8. For any invoice numbers without table data, try to find bill-amount pairs
+        if invoice_numbers and len(invoice_numbers) > len(table_data):
+            # Try to find bill-amount pairs specifically for Cera
+            bill_amount_pattern = r'(\d{4}-\d{5})(?:[^\n]*?)(\d{1,2}\.\d{1,2}\.\d{4})(?:[^\n]*?)(\d+\.\d{2})(?:[^\n]*?)(\d+\.\d{2})(?:[^\n]*?)(\d+\.\d{2})'
+            bill_amount_matches = re.findall(bill_amount_pattern, table_section if table_section else text)
 
-            # Clean up amounts
-            clean_amounts = [amt.replace(',', '.') for amt in amount_matches]
-
-            # Analyze the position and context of amounts to determine their meaning
-            gross_amounts = []
-            tds_amounts = []
-            net_amounts = []
-
-            if 'TDS Amount' in table_section:
-                # Try to extract structured data
-                rows = table_section.split('\n')
-                for row in rows:
-                    # Look for rows with multiple decimal values
-                    row_amounts = re.findall(amount_pattern, row)
-                    if len(row_amounts) >= 3:
-                        # Typically: Gross, TDS, Net
-                        gross_amounts.append(row_amounts[0].replace(',', '.'))
-                        tds_amounts.append(row_amounts[1].replace(',', '.'))
-                        net_amounts.append(row_amounts[2].replace(',', '.'))
-
-            # 7. Create table data entries for each invoice number
-            if invoice_numbers and len(invoice_numbers) == len(net_amounts) and len(invoice_numbers) == len(
-                    tds_amounts):
-                # We can create a row for each invoice with the corresponding amounts
-                for i, invoice in enumerate(invoice_numbers):
-                    row_data = {
-                        'unique_id': invoice,
-                        'receipt_date': document_date,
-                        'receipt_amount': net_amounts[i],
-                        'tds': tds_amounts[i],
-                        'tds_computed': 'No'  # TDS directly extracted
-                    }
-
-                    table_data.append(row_data)
-                    logger.info(f"Created table row for invoice {invoice}")
-            elif invoice_numbers and net_total:
-                # Create a summary entry if we can't match individual amounts
-                row_data = {
-                    'unique_id': invoice_numbers[0],
-                    'receipt_date': document_date,
-                    'receipt_amount': net_total,
-                    'tds_computed': 'Yes'  # Will need to compute TDS
-                }
-
-                table_data.append(row_data)
-                logger.info(f"Created summary row with net total {net_total}")
-
-            # Filter out phone/fax numbers by checking for common patterns
-            if invoice_numbers:
-                filtered_invoice_numbers = []
-                for inv in invoice_numbers:
-                    # Skip phone/fax patterns (usually start with 2764-, etc.)
-                    if inv.startswith('2764-') or inv.startswith('0144-'):
-                        logger.info(f"Skipping likely phone/fax number: {inv}")
+            if bill_amount_matches:
+                logger.info(f"Found {len(bill_amount_matches)} bill-amount pairs")
+                for match in bill_amount_matches:
+                    bill_no, date, gross, tds, net = match
+                    # Skip if we already have this bill in table_data
+                    if any(row.get('unique_id') == bill_no for row in table_data):
                         continue
 
-                    # Keep only those matching expected patterns for bill numbers
-                    if re.match(r'([24]\d{3})-([12]\d{4})', inv):
-                        filtered_invoice_numbers.append(inv)
+                    # Format date
+                    date_parts = date.split('.')
+                    if len(date_parts) == 3:
+                        formatted_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}"
+                    else:
+                        formatted_date = date
 
-                invoice_numbers = filtered_invoice_numbers
+                    row_data = {
+                        'unique_id': bill_no,
+                        'receipt_date': formatted_date,
+                        'receipt_amount': net,  # Use NET AMOUNT
+                        'tds': tds,
+                        'tds_computed': 'No'
+                    }
+                    table_data.append(row_data)
+                    logger.info(f"Created table row for bill {bill_no} with net amount {net}")
+
+        # 9. Filter out phone/fax numbers by checking for common patterns
+        if invoice_numbers:
+            filtered_invoice_numbers = []
+            for inv in invoice_numbers:
+                # Skip phone/fax patterns (usually start with 2764-, etc.)
+                if inv.startswith('2764-') or inv.startswith('0144-'):
+                    logger.info(f"Skipping likely phone/fax number: {inv}")
+                    continue
+
+                # Keep only those matching expected patterns for bill numbers
+                if not inv.startswith(('2764-', '0144-')) and re.match(r'(\d{4})-\d{5}', inv):
+                    filtered_invoice_numbers.append(inv)
+
+            invoice_numbers = filtered_invoice_numbers
+
+        # 10. As a last resort, if we have invoice numbers but no table data,
+        # create entries based on the document date and extract net total if available
+        if invoice_numbers and not table_data and (document_date or net_total):
+            for inv in invoice_numbers:
+                # Create minimal data
+                row_data = {
+                    'unique_id': inv,
+                    'receipt_date': document_date.replace('.', '-') if document_date else None,
+                }
+
+                # If we have multiple invoice numbers and a net total,
+                # split the total proportionally (as a last resort)
+                if net_total and len(invoice_numbers) > 1:
+                    # Equal distribution
+                    per_invoice = float(net_total.replace(',', '')) / len(invoice_numbers)
+                    row_data['receipt_amount'] = str(per_invoice)
+                    row_data['tds_computed'] = 'Yes'
+                elif net_total:
+                    # Just one invoice, use the full amount
+                    row_data['receipt_amount'] = net_total.replace(',', '')
+                    row_data['tds_computed'] = 'Yes'
+
+                table_data.append(row_data)
+                logger.info(f"Created fallback row for invoice {inv}")
 
         return invoice_numbers, table_data
 
@@ -640,19 +726,38 @@ class PDFProcessor:
                     logger.debug(f"Extracted TATA AIG claim/invoice number: {data['unique_id']}")
                     break
 
-            # Extract amount
-            amount_patterns = [
-                r'net\s+payable\s+amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
-                r'payment\s+amount:\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
-                r'rs\.\s*([0-9,.]+)',
-            ]
+            # FIRST CHECK THE TABLE FORMAT - Table Pattern
+            if 'Net Payable amount' in text or 'Net Payable\namount' in text:
+                # Try to extract from the table format
+                table_pattern = r'Gross\s+amount\s+TDS\s+amount\s+Net\s+Payable\s+amount\s*[\r\n]*\s*([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)'
+                table_match = re.search(table_pattern, text, re.IGNORECASE | re.DOTALL)
+                if table_match:
+                    data['receipt_amount'] = table_match.group(3).strip().replace(',', '')
+                    logger.debug(f"Extracted TATA AIG net amount from table: {data['receipt_amount']}")
+                    # Also extract TDS since we have it
+                    data['tds'] = table_match.group(2).strip().replace(',', '')
+                    data['tds_computed'] = 'No'  # TDS already present in the document
+                    logger.debug(f"Extracted TATA AIG TDS from table: {data['tds']}")
 
-            for pattern in amount_patterns:
-                amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
-                if amount_match:
-                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
-                    logger.debug(f"Extracted TATA AIG amount: {data['receipt_amount']}")
-                    break
+            # ONLY IF TABLE FORMAT DOESN'T MATCH, try other patterns - amount_patterns
+            if 'receipt_amount' not in data:
+                # Extract amount using improved patterns
+                amount_patterns = [
+                    r'Net\s+Payable\s+amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                    r'Net\s+Payable\s+Amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                    r'net\s+payable\s+amount\s*(?:rs\.?|inr)?\s*([0-9,.]+)',
+                    r'Payment\s+amoun[rt]:\s*(?:rs\.?|inr|₹)?\s*([0-9,.]+)',
+                    r'Payment\s+amoun[rt]\s*:?\s*(?:rs\.?|inr|₹)?\s*([0-9,.]+)',
+                    r'(?:Rs\.?|INR|₹)\s*([0-9,.]+)',
+                    r'(?:rs\.?|inr|₹)\s*([0-9,.]+)',
+                ]
+
+                for pattern in amount_patterns:
+                    amount_match = re.search(pattern, normalized_text, re.IGNORECASE)
+                    if amount_match:
+                        data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                        logger.debug(f"Extracted TATA AIG amount: {data['receipt_amount']}")
+                        break
 
             # Extract date
             date_patterns = [
@@ -884,6 +989,7 @@ class PDFProcessor:
             amount_patterns = [
                 r'payment\s+amount\s*:\s*([0-9,.]+)',
                 r'payment\s+amount:\s*([0-9,.]+)',
+                r'net\s+amount\s*([0-9,.]+)',
                 r'gross\s+amount\s*([0-9,.]+)',
             ]
 
@@ -898,6 +1004,7 @@ class PDFProcessor:
             date_patterns = [
                 r'value\s+date\s*:\s*(\d{2}-\d{2}-\d{4})',
                 r'date\s*:\s*(\d{2}-\d{2}-\d{4})',
+                r'(\d{2}-\d{2}-\d{4})',
             ]
 
             for pattern in date_patterns:
@@ -1203,7 +1310,102 @@ class PDFProcessor:
                     logger.debug(f"Extracted Zion TDS: {data['tds']}")
                     break
 
-        elif detected_provider in ["bajaj_allianz", "cholamandalam"]:
+
+        elif detected_provider == "bajaj_allianz":
+            # REPLACE THE EXISTING BAJAJ ALLIANZ CODE WITH THIS DEDICATED SECTION
+            logger.debug("Extracting data using Bajaj Allianz patterns")
+
+            # Extract claim/reference number with enhanced patterns for OC format
+            claim_patterns = [
+                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                r'oc-\d+-\d+-\d+-\d+',  # Full OC pattern
+                r'(oc-\d+-\d+-\d+(?:-\d+)?)',  # OC pattern that may or may not have the last segment
+                r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
+                r'settlement\s+reference\s*:\s*(\S+)',
+            ]
+
+            # Look for claim numbers in the table section
+            table_headers = ["Claim No", "Description", "Gross Amt", "TDS Amt"]
+            if all(header.lower() in normalized_text for header in map(str.lower, table_headers)):
+                # This looks like a table with claim information
+                table_sections = re.findall(r'(\d{4}\s+\d{1,2}/\d{1,2}/\d{2,4}.*?(?:OC-\d+-\d+-\d+[-\s]*\d+).*?\d+)',
+                                            text)
+
+                if table_sections:
+                    for section in table_sections:
+                        # Extract OC claim number from table row
+                        oc_match = re.search(r'(OC-\d+-\d+-\d+[-\s]*\d+)', section)
+                        if oc_match:
+                            # Clean up the claim number (remove spaces, ensure proper format)
+                            claim_raw = oc_match.group(1)
+                            claim_parts = re.split(r'[-\s]+', claim_raw)
+                            if len(claim_parts) >= 5:  # Should have 5 parts including the OC prefix
+                                data[
+                                    'unique_id'] = f"OC-{claim_parts[1]}-{claim_parts[2]}-{claim_parts[3]}-{claim_parts[4]}"
+                                logger.debug(f"Extracted Bajaj Allianz claim number from table: {data['unique_id']}")
+                                break
+
+            # If we didn't find a claim number in the table, try standard patterns
+            if 'unique_id' not in data:
+                for pattern in claim_patterns:
+                    claim_match = re.search(pattern, text, re.IGNORECASE)
+                    if claim_match:
+                        if '(' in pattern:  # Pattern has a capture group
+                            data['unique_id'] = claim_match.group(1).strip()
+                        else:
+                            data['unique_id'] = claim_match.group(0).strip()
+                        logger.debug(f"Extracted Bajaj Allianz claim number: {data['unique_id']}")
+                        break
+
+            # Extract amount with enhanced patterns
+            amount_patterns = [
+                r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                # Look for amount in table near end of document
+                r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date with enhanced patterns for multiple formats
+            date_patterns = [
+                r'value\s+date\s*[»:]\s*(\d{2}-[a-zA-Z]{3}-\d{4})',  # Format: 02-Jan-2025
+                r'advice\s+date\s*:?\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                # Look for date in table
+                r'(\d{2}/\d{2}/\d{2,4})\s+\d+\s+OC-',  # Date near OC claim number
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS from table if available
+            tds_patterns = [
+                r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+
+            for pattern in tds_patterns:
+                tds_match = re.search(pattern, text, re.IGNORECASE)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
+                    break
+
+        elif detected_provider in ["cholamandalam"]:
             # Bajaj Allianz/Cholamandalam format
             logger.debug(f"Extracting data using {detected_provider} patterns")
 
@@ -1449,6 +1651,62 @@ class PDFProcessor:
                     if key != 'unique_id' and value:
                         data_points[key] = value
                         logger.debug(f"Bank-specific extraction provided value for {key}: {value}")
+
+            # Special handling for Bajaj Allianz documents with table data
+            if detected_provider == "bajaj_allianz":
+                # Try specialized table extraction for Bajaj
+                table_data_bajaj = self.extract_table_data_from_bajaj(text)
+
+                # If we found table data with valid claim numbers, use the first one as unique_id
+                if table_data_bajaj and any('unique_id' in row for row in table_data_bajaj):
+                    for row in table_data_bajaj:
+                        if 'unique_id' in row:
+                            # Only override the unique_id if it's not already set or it looks invalid
+                            if not unique_id or unique_id == "Gross" or len(unique_id) < 5:
+                                unique_id = row['unique_id']
+                                logger.info(f"Using claim number from specialized table extraction: {unique_id}")
+
+                            # Also use other data from the table row
+                            if 'receipt_amount' in row:
+                                data_points['receipt_amount'] = row['receipt_amount']
+                            if 'receipt_date' in row:
+                                data_points['receipt_date'] = row['receipt_date']
+                            if 'tds' in row:
+                                data_points['tds'] = row['tds']
+                                data_points['tds_computed'] = row.get('tds_computed', 'No')
+
+                            # Also add this to the regular table_data for processing later
+                            if not any(td.get('unique_id') == row['unique_id'] for td in table_data):
+                                table_data.append(row)
+                            break
+
+        # Special handling for Bajaj Allianz documents with table data
+        if detected_provider == "bajaj_allianz":
+            # Try specialized table extraction for Bajaj
+            table_data_bajaj = self.extract_table_data_from_bajaj(text)
+
+            # If we found table data with valid claim numbers, use the first one as unique_id
+            if table_data_bajaj and any('unique_id' in row for row in table_data_bajaj):
+                for row in table_data_bajaj:
+                    if 'unique_id' in row:
+                        # Only override the unique_id if it's not already set or it looks invalid
+                        if not unique_id or unique_id == "Gross" or len(unique_id) < 5:
+                            unique_id = row['unique_id']
+                            logger.info(f"Using claim number from specialized table extraction: {unique_id}")
+
+                        # Also use other data from the table row
+                        if 'receipt_amount' in row:
+                            data_points['receipt_amount'] = row['receipt_amount']
+                        if 'receipt_date' in row:
+                            data_points['receipt_date'] = row['receipt_date']
+                        if 'tds' in row:
+                            data_points['tds'] = row['tds']
+                            data_points['tds_computed'] = row.get('tds_computed', 'No')
+
+                        # Also add this to the regular table_data for processing later
+                        if not any(td.get('unique_id') == row['unique_id'] for td in table_data):
+                            table_data.append(row)
+                        break
 
         # THIRD PRIORITY: If bank-specific extraction didn't find everything,
         # use the original field pattern extraction
@@ -1750,6 +2008,10 @@ class PDFProcessor:
             try:
                 # Different date formats we might encounter
                 date_formats = [
+                    '%d/%m/%Y',  # 01/01/2025 (dd/mm/yyyy)
+                    '%d/%m/%y',  # 01/01/25' (dd/mm/yy)
+                    '%m/%d/%Y',  # 01/01/2025 (mm/dd/yyyy)
+                    '%m/%d/%y',  # 01/01/25 (mm/dd/yy)
                     '%d %b %Y',  # 11 Feb 2025
                     '%d-%m-%Y',  # 12-02-2025
                     '%d/%m/%Y',  # 12/02/2025
@@ -2021,7 +2283,37 @@ class PDFProcessor:
 
             logger.info(f"Extracted {len(table_data)} rows from Zion table")
 
-        # 6. Look for table with invoice numbers and amounts (generic pattern)
+        # 6. Look for Liberty payment advice tables with Gross, TDS and Net columns
+        liberty_table_match = re.search(r'(\d+)\s+Gross\s+Amount\s+TDS\s+Net\s+Amount\s*\n\s*(\d+)\s+(\d+)\s+(\d+)',
+                                        text, re.IGNORECASE)
+        if not liberty_table_match:
+            # Try alternative pattern
+            liberty_table_match = re.search(r'Gross\s+Amount\s+TDS\s+Net\s+Amount\s*\n\s*(\d+)\s+(\d+)\s+(\d+)', text,
+                                            re.IGNORECASE)
+
+        if liberty_table_match:
+            # Get the values based on which pattern matched
+            if len(liberty_table_match.groups()) == 4:
+                ref_id = liberty_table_match.group(1).strip()
+                gross_amount = liberty_table_match.group(2).strip()
+                tds_amount = liberty_table_match.group(3).strip()
+                net_amount = liberty_table_match.group(4).strip()
+            else:
+                gross_amount = liberty_table_match.group(1).strip()
+                tds_amount = liberty_table_match.group(2).strip()
+                net_amount = liberty_table_match.group(3).strip()
+                ref_id = None  # Will use any existing unique_id
+
+            row_data = {
+                'unique_id': ref_id if ref_id else unique_id,
+                'receipt_amount': net_amount,  # Use net amount as receipt_amount
+                'tds': tds_amount,
+                'tds_computed': 'No'  # TDS directly extracted
+            }
+            table_data.append(row_data)
+            logger.info(f"Extracted Liberty payment table with Net Amount: {net_amount}, TDS: {tds_amount}")
+
+        # 7. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -2058,6 +2350,123 @@ class PDFProcessor:
                 logger.debug(f"Table row {i + 1}: {row}")
         else:
             logger.info("No table data found")
+
+        return table_data
+
+    def extract_table_data_from_bajaj(self, text):
+        """
+        Extract table data specifically from Bajaj Allianz format PDFs where data might be split across lines.
+
+        Args:
+            text (str): Extracted PDF text
+
+        Returns:
+            list: List of dictionaries containing extracted table data
+        """
+        table_data = []
+
+        # Look for the table pattern specific to Bajaj Allianz advices
+        table_pattern = r'(?:Appr|Ref)\s+Date\s+Description\s+Claim\s+No\s+Gross\s+(?:Amt|Amount)\s+(?:Ser\s+Tax|Service\s+Tax)\s+TDS\s+(?:Amt|Amount)\s+Amount\s+\(INR\)'
+        table_match = re.search(table_pattern, text, re.IGNORECASE)
+
+        if table_match:
+            # Extract the content after the table header
+            table_content = text[table_match.end():]
+
+            # Find the end of the table content
+            end_markers = ["Note:", "----", "This is a system"]
+            for marker in end_markers:
+                end_pos = table_content.find(marker)
+                if end_pos > 0:
+                    table_content = table_content[:end_pos].strip()
+                    break
+
+            # Split the content into lines
+            lines = table_content.strip().split('\n')
+
+            # Process rows by combining lines if needed
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+
+                # Skip empty lines
+                if not line:
+                    i += 1
+                    continue
+
+                # Check if this looks like the start of a data row (reference number)
+                if re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', line):
+                    # This is likely a row start
+                    full_row = line
+
+                    # Check if the next line might be a continuation
+                    if i + 1 < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i + 1]):
+                        full_row += " " + lines[i + 1].strip()
+                        i += 2
+                    else:
+                        i += 1
+
+                    # Now extract the data using a more specific pattern
+                    # Looking for values in a specific order
+                    row_data = {}
+
+                    # Extract reference number and date
+                    ref_match = re.search(r'(\d{4,})\s+(\d{2}/\d{2}/\d{1,4})', full_row)
+                    if ref_match:
+                        row_data['reference'] = ref_match.group(1).strip()
+                        row_data['receipt_date'] = ref_match.group(2).strip()
+
+                    # Extract description number
+                    desc_match = re.search(r'(\d{2}/\d{2}/\d{1,4})\s+(\d+)', full_row)
+                    if desc_match:
+                        row_data['description'] = desc_match.group(2).strip()
+
+                    # Extract claim number - CRITICAL FIX HERE
+                    claim_pattern = r'OC-\d+-\d+-\d+-\d+'  # Pattern to match entire claim number including splits
+                    claim_match = re.search(claim_pattern, full_row)
+                    if claim_match:
+                        row_data['unique_id'] = claim_match.group(0).strip()
+                    else:
+                        # Try a more flexible pattern to handle split claim numbers
+                        claim_parts = re.findall(r'OC-\d+-\d+-\d+[-\s]*(\d+)?', full_row)
+                        if claim_parts:
+                            # If we have a partial match, look for continuation in adjacent lines
+                            partial_id = re.search(r'(OC-\d+-\d+-\d+)', full_row).group(1)
+
+                            # Check next line for remaining digits if we don't have a complete ID
+                            continuation = ""
+                            if i < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i].strip()):
+                                continuation = re.search(r'^\s*(\d+)', lines[i].strip())
+                                if continuation:
+                                    continuation = continuation.group(1)
+                                    i += 1  # Advance if we consumed the next line
+
+                            # Combine parts to form complete ID
+                            row_data['unique_id'] = f"{partial_id}-{continuation}" if continuation else partial_id
+
+                    # Extract amount values using positions or patterns
+                    amounts = re.findall(r'(\d+(?:\.\d+)?)', full_row)
+                    if len(amounts) >= 4:  # We need at least reference, date, description, and values
+                        idx = 3  # Start from the 4th number (after ref, date, desc)
+                        if len(amounts) > idx:
+                            row_data['gross_amount'] = amounts[idx]
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['service_tax'] = amounts[idx]
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['tds'] = amounts[idx]
+                            row_data['tds_computed'] = 'No'  # TDS is directly from document
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['receipt_amount'] = amounts[idx]
+
+                    # Add the row data if we have the essential fields
+                    if 'unique_id' in row_data and 'receipt_amount' in row_data:
+                        table_data.append(row_data)
+                        logger.info(f"Extracted table row with claim ID: {row_data['unique_id']}")
+                else:
+                    i += 1
 
         return table_data
 

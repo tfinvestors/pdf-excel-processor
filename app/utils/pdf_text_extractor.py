@@ -713,7 +713,7 @@ class PDFTextExtractor:
 
     def clean_text(self, text):
         """
-        Clean and standardize extracted text.
+        Clean and standardize extracted text with improved line handling.
 
         Args:
             text (str): Extracted text
@@ -724,8 +724,11 @@ class PDFTextExtractor:
         if not text:
             return ""
 
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
+        # Join broken lines in claim numbers - critical for Bajaj Allianz documents
+        text = re.sub(r'(OC-\d+-\d+-\d+)[ \t]*\n[ \t]*(\d+)', r'\1-\2', text)
+
+        # Remove excessive whitespace (but preserve newlines for some processing)
+        text = re.sub(r'[ \t]+', ' ', text)
 
         # Remove non-printable characters
         text = ''.join(c for c in text if c.isprintable() or c in ['\n', '\t'])

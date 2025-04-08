@@ -301,6 +301,22 @@ class ExcelHandler:
 
         # Fix European number format in receipt_amount
         if 'receipt_amount' in data_points and data_points['receipt_amount']:
+            try:
+                amount_val = float(data_points['receipt_amount'].replace(',', ''))
+
+                # If the amount seems very small compared to TDS, it might be wrong
+                if 'tds' in data_points and data_points.get('tds'):
+                    tds_val = float(data_points['tds'].replace(',', ''))
+                    if amount_val < tds_val and tds_val > 0:
+                        logger.warning(
+                            f"Receipt amount ({amount_val}) is less than TDS ({tds_val}). This may be incorrect.")
+                        # Check if the amount might actually be the TDS by mistake
+                        if abs(amount_val - tds_val) < 1.0:  # If they're very close
+                            logger.warning("Receipt amount appears to be TDS. Skipping this field.")
+                            data_points.pop('receipt_amount')
+                            failed_fields.append('receipt_amount')
+            except ValueError:
+                pass
             amount_str = data_points['receipt_amount']
 
             # Handle European number format with multiple periods (9.989.00)
@@ -528,45 +544,46 @@ class ExcelHandler:
         # Use provided global data points or an empty dict
         global_data = global_data_points or {}
 
-        for row_data in table_data:
-            # The row_data should contain at least one identifier (invoice_no or client_ref)
+        # Track which Excel rows we've updated to avoid duplicates
+        processed_ids = set()
+
+        for row_index, row_data in enumerate(table_data):
+            # The row_data should contain at least one identifier (unique_id)
             # and at least one value to update (receipt_amount, receipt_date, or tds)
 
-            # Try to find the corresponding row in Excel
-            unique_id = row_data.get('unique_id', None)
-            if not unique_id:
-                # Try to find a suitable unique ID from other fields
-                if 'invoice_no' in row_data:
-                    unique_id = row_data['invoice_no']
-                elif 'client_ref' in row_data:
-                    unique_id = row_data['client_ref']
-
+            unique_id = row_data.get('unique_id')
             if not unique_id:
                 logger.warning(f"No unique identifier found for row data: {row_data}")
                 results['unprocessed'] += 1
                 continue
 
+            # Skip if we've already processed this ID
+            if unique_id in processed_ids:
+                logger.info(f"Already processed {unique_id}, skipping duplicate")
+                continue
+
             # Copy missing fields from global data points to row_data
-            # This is the critical part - adding fields like receipt_date from the global extraction
             for key, value in global_data.items():
                 if key not in row_data and key != 'unique_id':
                     row_data[key] = value
                     logger.debug(f"Added global field '{key}': {value} to row data for {unique_id}")
 
             # Find the row in Excel
-            row_index = self.find_row_by_identifiers(unique_id, row_data, pdf_text)
+            excel_row_index = self.find_row_by_identifiers(unique_id, row_data, pdf_text)
 
-            if row_index is None:
+            if excel_row_index is None:
                 logger.warning(f"No matching Excel row found for ID: {unique_id}")
                 results['unprocessed'] += 1
                 continue
 
             # Update the row with data
-            success, updated_fields, failed_fields = self.update_row_with_data(row_index, row_data, pdf_text)
+            success, updated_fields, failed_fields = self.update_row_with_data(excel_row_index, row_data, pdf_text)
 
             if success:
                 results['processed'] += 1
                 logger.info(f"Successfully updated row for ID: {unique_id}")
+                # Mark this ID as processed
+                processed_ids.add(unique_id)
             else:
                 results['unprocessed'] += 1
                 logger.warning(f"Failed to update row for ID: {unique_id}")
