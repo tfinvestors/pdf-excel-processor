@@ -1684,7 +1684,7 @@ class PDFProcessor:
             logger.info("Detected ICICI Lombard claim table format")
 
             # Extract first row's data from the table for primary identification
-            claim_ref_match = re.search(r'CLAIM_REF_NO.*?\n(ENG\d+)', text, re.IGNORECASE)
+            claim_ref_match = re.search(r'CLAIM_REF_NO.*?\n((?:ENG|MAR|FIR|MSC|LIA)\d+)', text, re.IGNORECASE)
             invoice_match = re.search(r'LAE Invoice No.*?\n.*?(2425-\d{5})', text, re.IGNORECASE)
 
             if claim_ref_match:
@@ -2322,7 +2322,7 @@ class PDFProcessor:
 
             # Use a more flexible pattern that can handle different date formats and number formats
             rows = re.findall(
-                r'(ENG\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
+                r'((?:ENG|MAR|FIR|MSC|LIA)\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
                 text)
 
             if rows:

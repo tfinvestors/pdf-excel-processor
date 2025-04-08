@@ -38,6 +38,10 @@ class ExcelHandler:
         # Load the Excel file
         self.load_excel()
 
+    def _is_valid_claim_ref(self, identifier):
+        """Check if an identifier matches the claim reference format patterns"""
+        return identifier and re.match(r'^(?:ENG|MAR|FIR|MSC|LIA)\d+$', identifier)
+
     def load_excel(self):
         """Load the Excel file into a pandas DataFrame and openpyxl Workbook."""
         try:
@@ -229,7 +233,7 @@ class ExcelHandler:
             logger.info(f"Cleaned ID for matching: {cleaned_id}")
 
             # Check if this is an ICICI Lombard document with "ENG" pattern
-            if unique_id.startswith("ENG") or (
+            if (unique_id and any(unique_id.startswith(prefix) for prefix in ["ENG", "MAR", "FIR", "MSC", "LIA"])) or (
                     pdf_text and "CLAIM_REF_NO" in pdf_text and "LAE Invoice No" in pdf_text):
                 # For ICICI Lombard documents, try both claim ref and invoice number
                 invoice_no = data_points.get('invoice_no')
@@ -406,13 +410,13 @@ class ExcelHandler:
                 return index
 
         # Then try claim reference specifically in client ref column
-        if claim_ref and self.client_ref_column:
+        if self._is_valid_claim_ref(unique_id) and self.client_ref_column:
             logger.info(f"Trying to match with claim reference: {claim_ref}")
             column_series = self.df[self.client_ref_column].astype(str)
-            matches = column_series[column_series == claim_ref]
-            if not matches.empty:
-                index = matches.index[0]
-                logger.info(f"Found match for claim reference in column {self.client_ref_column} at row {index}")
+            exact_matches = column_series[column_series == unique_id]
+            if not exact_matches.empty:
+                index = exact_matches.index[0]
+                logger.info(f"Found exact match for claim reference in {self.client_ref_column} at row {index}")
                 return index
 
         logger.warning(f"No match found for ID: {unique_id}, invoice: {invoice_no}, claim ref: {claim_ref}")

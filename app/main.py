@@ -177,7 +177,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
 
                     # Use the regex pattern to extract rows
                     rows = re.findall(
-                        r'(ENG\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
+                        r'((?:ENG|MAR|FIR|MSC|LIA)\d+)\s+(2425-\d{5})\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)\s+(\d{2}-\d{2}-\d{4})',
                         extracted_text)
 
                     for row in rows:
