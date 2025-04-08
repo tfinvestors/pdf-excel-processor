@@ -1082,10 +1082,14 @@ class PDFProcessor:
 
             # Extract claim/policy number
             claim_patterns = [
+                # Look specifically for claim number in the table format
+                r'CLAIM NUMBER\s+AMOUNT.*?(?:\d{5,})\s+(\d{20}|\d{14}|\d{17}|\d{11,})',
+                r'CLAIM NUMBER.*?(\d{20}|\d{14}|\d{17}|\d{11,})',
+                # Extract the claim number directly from the table row
+                r'(?:POLICY|CLAIM) NUMBER.*?\n.*?(?:\d+)\s+(\d{20}|\d{14}|\d{17}|\d{11,})',
+                # Then fallback to other patterns
+                r'claim\s+number.*?(\d{14,})',
                 r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                r'policy\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                r'invoice\s+number.*?(\d+-\d+)',
-                r'\d{12,}',
             ]
 
             for pattern in claim_patterns:
@@ -2162,7 +2166,7 @@ class PDFProcessor:
                 # Special handling for New India with threshold
                 if detected_provider == "new_india" and amount <= NEW_INDIA_THRESHOLD:
                     tds = round(amount * 0.09259259, 2)
-                    logger.info(f"TDS computed for New India (≤300000): {tds} (9.259259% of {amount})")
+                    logger.info(f"TDS computed for New India (<=300000): {tds} (9.259259% of {amount})")
                 else:
                     tds = round(amount * 0.11111111, 2)
                     logger.info(f"TDS computed for specific provider: {tds} (11.111111% of {amount})")
@@ -2483,7 +2487,29 @@ class PDFProcessor:
 
         return table_data
 
-        # 9. Look for table with invoice numbers and amounts (generic pattern)
+        # 9. Add specific handling for New India Assurance table format
+        if "INVOICE NUMBER POLICY NUMBER CLAIM NUMBER AMOUNT" in text:
+            logger.info("Detected New India Assurance table format")
+
+            # Extract rows from the standardized table
+            rows = re.findall(
+                r'(\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)',
+                text
+            )
+
+            for row in rows:
+                invoice_no, policy_no, claim_no, amount = row
+                # Only add rows with an actual amount value (not TDS line)
+                if float(amount.replace(',', '')) > 0:
+                    table_data.append({
+                        'unique_id': claim_no,  # This is the correct claim number
+                        'invoice_no': invoice_no,
+                        'policy_no': policy_no,
+                        'receipt_amount': amount.replace(',', '')
+                    })
+                    logger.info(f"Extracted New India claim: {claim_no} with amount {amount}")
+
+        # 10. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -2501,7 +2527,7 @@ class PDFProcessor:
 
                 table_data.append(row_data)
 
-        # 10. Generic pattern for invoice numbers followed by amounts
+        # 11. Generic pattern for invoice numbers followed by amounts
         generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
                                   re.IGNORECASE)
         for row in generic_rows:
