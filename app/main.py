@@ -361,6 +361,8 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                 # Specifically check the receipt_amount format
                 if 'receipt_amount' in data_points:
                     try:
+                        logger.info(
+                            f"IMPORTANT DEBUG - Initial receipt_amount in data_points in main.py code file: {data_points['receipt_amount']}")
                         test_float = float(data_points['receipt_amount'])
                         # If valid, make sure it's stored as a string with the correct format
                         data_points['receipt_amount'] = str(test_float)
@@ -376,9 +378,13 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                                 f"Emergency fix on receipt_amount: {data_points['receipt_amount']} -> {fixed_amount}")
                             data_points['receipt_amount'] = fixed_amount
 
+
                 # Update Excel row with extracted data
                 success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
                                                                                             extracted_text, detected_provider)
+
+                logger.info(
+                    f"IMPORTANT DEBUG - Final receipt_amount in data_points in main.py code file just before calling update_row_with_data function: {data_points['receipt_amount']}")
 
                 if success:
                     if status_callback:

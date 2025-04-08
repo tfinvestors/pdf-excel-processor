@@ -438,6 +438,9 @@ class ExcelHandler:
         if row_index is None or not data_points:
             return False, [], list(data_points.keys())
 
+        if 'receipt_amount' in data_points:
+            logger.info(f"IMPORTANT DEBUG - Initial receipt_amount in data_points: {data_points['receipt_amount']}")
+
         # Fix European number format in receipt_amount
         if 'receipt_amount' in data_points and data_points['receipt_amount']:
             try:
@@ -602,6 +605,10 @@ class ExcelHandler:
                 if field in data_points and data_points[field]:
                     value = data_points[field]
                     column_index = self.df.columns.get_loc(mapped_column) + 1  # 1-indexed for openpyxl
+
+                    if 'receipt_amount' in data_points:
+                        logger.info(
+                            f"IMPORTANT DEBUG - Final receipt_amount in data_points: {data_points['receipt_amount']}")
 
                     # Update the cell value
                     cell = self.ws.cell(row=excel_row, column=column_index)
