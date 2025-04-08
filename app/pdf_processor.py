@@ -855,25 +855,28 @@ class PDFProcessor:
             # Future Generali format
             logger.debug("Extracting data using Future Generali patterns")
 
-            # Extract claim/reference number
-            claim_patterns = [
-                r'our\s+ref\s*:\s*(\S+)',
-                r'your\s+ref:\s*(\S+)',
-                r'b\d+\s+claims\s+payment',
-                r'invoice\s+details\s*.*?(\d+-\d+)',
-            ]
+            # First look specifically for F0036935 pattern in the table section
+            claim_table_pattern = r'Not\s+Applic\/F(\d{7})\s+Claims\s+Payment'
+            claim_table_match = re.search(claim_table_pattern, text, re.IGNORECASE)
 
-            for pattern in claim_patterns:
-                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                if claim_match:
-                    if 'ref' in pattern.lower():
-                        data['unique_id'] = claim_match.group(1).strip()
-                    elif 'invoice' in pattern.lower():
-                        data['unique_id'] = claim_match.group(1).strip()
-                    else:
-                        data['unique_id'] = claim_match.group(0).strip()
-                    logger.debug(f"Extracted Future Generali reference: {data['unique_id']}")
-                    break
+            if claim_table_match:
+                data['unique_id'] = f"F{claim_table_match.group(1)}"
+                logger.debug(f"Extracted Future Generali claim number from table: {data['unique_id']}")
+
+            # If not found in table, then try the other patterns
+            elif not 'unique_id' in data or not data['unique_id']:
+                # Try different invoice/claim patterns
+                invoice_patterns = [
+                    r'F\d{7}(?=\s+Claims\s+Payment)',  # Match F followed by 7 digits before Claims Payment
+                    r'Invoice\s+Details.*?(?:F\d{7})',  # Look for F-numbers in Invoice Details
+                ]
+
+                for pattern in invoice_patterns:
+                    invoice_match = re.search(pattern, text, re.IGNORECASE)
+                    if invoice_match:
+                        data['unique_id'] = invoice_match.group(0).strip()
+                        logger.debug(f"Extracted Future Generali invoice/claim number: {data['unique_id']}")
+                        break
 
             # Extract amount
             amount_patterns = [
@@ -1429,15 +1432,16 @@ class PDFProcessor:
                     break
 
         elif detected_provider in ["cholamandalam"]:
-            # Bajaj Allianz/Cholamandalam format
+
             logger.debug(f"Extracting data using {detected_provider} patterns")
 
             # Extract claim/reference number
             claim_patterns = [
                 r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
                 r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
-                r'oc-\d+-\d+-\d+',
-                r'inv\s+ref:claim\s+no\s*:\s*(\d+)',
+                r'inv\s+ref:claim\s+no:\s*(\d+)',
+                r'inv\s+ref:\s*claim\s+no:\s*(\d+)',
+                r'claim\s+no:\s*(\d+)',
                 r'settlement\s+reference\s*:\s*(\S+)',
             ]
 
@@ -1878,6 +1882,14 @@ class PDFProcessor:
                     data_points[key] = value
                     logger.debug(f"Generic extraction provided value for {key}: {value}")
 
+        # Cholamandalam bank-specific extraction
+        if not unique_id or unique_id == ':':
+            # Try specific format for payment details section
+            payment_details_match = re.search(r'INV REF:Claim No:\s*(\d+)', text, re.IGNORECASE)
+            if payment_details_match:
+                unique_id = payment_details_match.group(1).strip()
+                logger.info(f"Found unique ID from Cholamandalam payment details: {unique_id}")
+
         # FIFTH PRIORITY: Use ML model to enhance extraction if available
         if self.ml_model and self.use_ml:
             try:
@@ -1894,6 +1906,24 @@ class PDFProcessor:
 
         # Extract table data which might contain multiple entries
         table_data = self.extract_table_data(text)
+
+        # Check if F0036935 pattern exists in any of the table rows
+        f_pattern_rows = [row for row in table_data if
+                          'unique_id' in row and re.match(r'F\d{7}', row['unique_id']) and 'Claims Payment' in row.get(
+                              'payment_type', '')]
+
+        if f_pattern_rows:
+            # Use the first match as the primary unique ID
+            unique_id = f_pattern_rows[0]['unique_id']
+            logger.info(f"Found primary Future Generali claim ID in table: {unique_id}")
+
+            # Also update receipt_amount if needed
+            if 'receipt_amount' in f_pattern_rows[0]:
+                cleaned_amount = f_pattern_rows[0]['receipt_amount'].lstrip('0')
+                if cleaned_amount.startswith('.'):
+                    cleaned_amount = '0' + cleaned_amount
+                data_points['receipt_amount'] = cleaned_amount
+
         # Ensure we're using the correct unique ID for Excel matching
         if table_data and unique_id:
             # Force the table_data entries to use the validated unique ID
@@ -2350,7 +2380,50 @@ class PDFProcessor:
             table_data.append(row_data)
             logger.info(f"Extracted Liberty payment table with Net Amount: {net_amount}, TDS: {tds_amount}")
 
-        # 7. Look for table with invoice numbers and amounts (generic pattern)
+        # 7. Special handling for Future Generali table format
+        future_generali_table = re.search(r'Ref\s+NO\.\.\.\/Registration\s+No\.\/Invoice\s+Details.*?Amount', text,
+                                          re.IGNORECASE)
+        if future_generali_table:
+            # Extract rows using the specific table format of Future Generali
+            table_content = text[future_generali_table.end():]
+            # Find the end of table
+            end_pos = table_content.find("Corporate Identity")
+            if end_pos > 0:
+                table_content = table_content[:end_pos]
+
+            # Look for patterns like: HDF_20250108/Not Applic/F0036935 Claims Payment 000011547.00
+            fg_rows = re.findall(
+                r'(HDF_\d+/Not\s+Applic/(?:F\d{7}|[^/\s]+))\s+(Claims\s+Payment|Intermediary[^0-9]+)\s+(\d+\.\d{2})',
+                table_content)
+
+            for row in fg_rows:
+                ref_with_invoice = row[0].strip()
+                payment_type = row[1].strip()
+                amount = row[2].strip()
+
+                # Extract the invoice/claim number part (F0036935)
+                invoice_match = re.search(r'F(\d{7})', ref_with_invoice)
+                if invoice_match:
+                    row_data = {
+                        'unique_id': f"F{invoice_match.group(1)}",
+                        'payment_type': payment_type
+                    }
+
+                    # Use the actual amount from the table, not the overall document amount
+                    if "Claims Payment" in payment_type:
+                        row_data['receipt_amount'] = amount
+                    elif "Intermediary" in payment_type and "TDS" in text[table_content.find(
+                            ref_with_invoice) - 100:table_content.find(ref_with_invoice)]:
+                        row_data['tds'] = amount
+                        row_data['tds_computed'] = 'No'  # Directly extracted
+
+                    # Only add if it has useful data and not already present
+                    if 'receipt_amount' in row_data and not any(
+                            td.get('unique_id') == row_data['unique_id'] for td in table_data):
+                        table_data.append(row_data)
+                        logger.info(f"Extracted Future Generali table row: {row_data}")
+
+        # 8. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
@@ -2368,7 +2441,7 @@ class PDFProcessor:
 
                 table_data.append(row_data)
 
-        # 7. Generic pattern for invoice numbers followed by amounts
+        # 9. Generic pattern for invoice numbers followed by amounts
         generic_rows = re.findall(r'(?:Invoice|Bill|Ref).*?(\d{4}-\d{5}).*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text,
                                   re.IGNORECASE)
         for row in generic_rows:

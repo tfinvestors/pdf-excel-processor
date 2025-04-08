@@ -229,6 +229,23 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     if status_callback:
                         status_callback(f"📊 Found table with {len(table_data)} rows in {pdf_file}")
 
+                    # For Future Generali specifically, find the right claim number
+                    if detected_provider == "future_generali":
+                        # Look for the specific format with F0036935 pattern
+                        claim_rows = [row for row in table_data if 'unique_id' in row and
+                                      re.match(r'F\d{7}', row['unique_id']) and
+                                      'Claims Payment' in row.get('payment_type', '')]
+
+                        if claim_rows:
+                            # Use this row's unique_id for the whole document
+                            unique_id = claim_rows[0]['unique_id']
+                            logger.info(f"Using Future Generali claim ID from table: {unique_id}")
+
+                            # For each row in table_data, update the unique_id to this claim ID
+                            # This ensures all rows get matched to the same Excel row
+                            for row in table_data:
+                                row['unique_id'] = unique_id
+
                     # Process the table data - pass the extracted data_points
                     table_results = excel_handler.process_multi_row_data(table_data, extracted_text, data_points)
 

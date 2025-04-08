@@ -275,6 +275,39 @@ class ExcelHandler:
                         logger.info(f"Found exact case-insensitive match in column {column} at row {index}")
                         return index
 
+            # If no match yet, try to look specifically for just the numeric part of F-pattern identifiers
+            if not match_found and re.match(r'F\d{7}', cleaned_id):
+                # Try matching just the 7-digit part without the F prefix
+                numeric_part = cleaned_id[1:]  # Remove the 'F'
+
+                for column in [self.invoice_column, self.client_ref_column]:
+                    if column is not None:
+                        column_series = self.df[column].astype(str)
+
+                        # First check if the full numeric part exists anywhere
+                        numeric_matches = column_series[column_series.str.contains(numeric_part)]
+                        if not numeric_matches.empty:
+                            logger.info(f"Found numeric part match for '{numeric_part}' in column {column}")
+                            return numeric_matches.index[0]
+
+                        # If not, check if the last 5 digits match (sometimes only partial numbers are stored)
+                        if len(numeric_part) >= 5:
+                            last_5_digits = numeric_part[-5:]
+                            partial_matches = column_series[column_series.str.contains(last_5_digits)]
+                            if not partial_matches.empty:
+                                logger.info(
+                                    f"Found partial match with last 5 digits '{last_5_digits}' in column {column}")
+                                return partial_matches.index[0]
+
+            # Debug: Print sample Excel values to check what we're matching against
+            logger.info(f"Excel row sample for potential matches:")
+            if self.invoice_column:
+                sample_values = self.df[self.invoice_column].astype(str).head(5).tolist()
+                logger.info(f"Column '{self.invoice_column}' first 5 values: {sample_values}")
+            if self.client_ref_column:
+                sample_values = self.df[self.client_ref_column].astype(str).head(5).tolist()
+                logger.info(f"Column '{self.client_ref_column}' first 5 values: {sample_values}")
+
             # No exact match found - that's all we try with strict matching
             logger.warning(f"No exact match found for ID: {unique_id}")
             return None
