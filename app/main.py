@@ -378,13 +378,12 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                                 f"Emergency fix on receipt_amount: {data_points['receipt_amount']} -> {fixed_amount}")
                             data_points['receipt_amount'] = fixed_amount
 
+                logger.info(
+                    f"IMPORTANT DEBUG - Final receipt_amount in data_points in main.py code file just before calling update_row_with_data function: {data_points['receipt_amount']}")
 
                 # Update Excel row with extracted data
                 success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
                                                                                             extracted_text, detected_provider)
-
-                logger.info(
-                    f"IMPORTANT DEBUG - Final receipt_amount in data_points in main.py code file just before calling update_row_with_data function: {data_points['receipt_amount']}")
 
                 if success:
                     if status_callback:
