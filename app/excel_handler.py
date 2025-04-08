@@ -211,7 +211,7 @@ class ExcelHandler:
     def find_row_by_identifiers(self, unique_id, data_points, pdf_text=None):
         """
         Find a row in the DataFrame by matching either Invoice No. or Client Ref. No.
-        Enhanced with more robust matching strategies for all PDF types.
+        Enhanced with strict matching to ensure 100% accuracy.
         """
         if not unique_id:
             return None
@@ -256,254 +256,27 @@ class ExcelHandler:
                 logger.info(f"Invoice prefix: {invoice_prefix}")
                 logger.info(f"Invoice number: {invoice_number}")
 
-            # Create multiple matching strategies
-            strategies = [
-                # Strategy 1: Exact match with cleaned ID
-                lambda col_series: col_series[col_series.str.lower() == cleaned_id.lower()],
-
-                # Strategy 2: Contains match with cleaned ID
-                lambda col_series: col_series[col_series.str.contains(cleaned_id, case=False, na=False)]
-                if len(cleaned_id) >= 5 else pd.Series(),
-
-                # Strategy 3: Numeric part match
-                lambda col_series: col_series[col_series.str.contains(numeric_part, na=False)]
-                if numeric_part and len(numeric_part) >= 5 else pd.Series(),
-
-                # Strategy 4: Match last part of ID (for claims like 510000/11/2024/356)
-                lambda col_series: col_series[col_series.str.contains(claim_last_part, na=False)]
-                if claim_last_part else pd.Series(),
-
-                # Strategy 5: Match first part of ID (for claims starting with specific numbers)
-                lambda col_series: col_series[col_series.str.contains(claim_first_part, na=False)]
-                if claim_first_part and len(claim_first_part) >= 5 else pd.Series(),
-
-                # Strategy 6: Match invoice number part
-                lambda col_series: col_series[col_series.str.contains(invoice_number, na=False)]
-                if invoice_number and len(invoice_number) >= 4 else pd.Series(),
-
-                # Strategy 7: Match invoice prefix (like 2425)
-                lambda col_series: col_series[col_series.str.contains(invoice_prefix, na=False)]
-                if invoice_prefix and len(invoice_prefix) >= 4 else pd.Series(),
-
-                # Strategy 8: For incomplete extractions, try looking for partial matches
-                lambda col_series: col_series[col_series.str.contains(cleaned_id[:6], na=False)]
-                if len(cleaned_id) >= 6 else pd.Series(),
-
-                # Strategy 9: For identifiers that might be truncated/partial
-                lambda col_series: col_series[col_series.str.contains(cleaned_id[-6:], na=False)]
-                if len(cleaned_id) >= 6 else pd.Series(),
-            ]
-
-            # Try each column with each strategy
+            # Try each column with exact matching first - STRICT MATCHING ONLY
             for column in [self.invoice_column, self.client_ref_column]:
                 if column is not None:
                     column_series = self.df[column].astype(str)
 
-                    for strategy_idx, strategy in enumerate(strategies):
-                        matches = strategy(column_series)
-                        if not matches.empty:
-                            index = matches.index[0]
-                            logger.info(
-                                f"Match found using strategy {strategy_idx + 1} in column {column} at row {index}")
-                            return index
+                    # Exact match (case-sensitive)
+                    exact_matches = column_series[column_series == cleaned_id]
+                    if not exact_matches.empty:
+                        index = exact_matches.index[0]
+                        logger.info(f"Found exact case-sensitive match in column {column} at row {index}")
+                        return index
 
-            # No match found using standard strategies
-            logger.warning(f"No match found for ID: {unique_id}")
+                    # Exact match (case-insensitive)
+                    exact_matches_case_insensitive = column_series[column_series.str.lower() == cleaned_id.lower()]
+                    if not exact_matches_case_insensitive.empty:
+                        index = exact_matches_case_insensitive.index[0]
+                        logger.info(f"Found exact case-insensitive match in column {column} at row {index}")
+                        return index
 
-            # Try special pattern matching for invoice numbers (like 2425-xxxxx)
-            if unique_id and '-' in unique_id and re.match(r'\d{4}-\d{5}', unique_id):
-                logger.debug(f"Using invoice number pattern matching for: {unique_id}")
-
-                # Try exact match first
-                for column in [self.invoice_column, self.client_ref_column]:
-                    if column is not None:
-                        column_series = self.df[column].astype(str)
-                        matches = column_series[column_series.str.contains(unique_id, case=False, na=False)]
-                        if not matches.empty:
-                            index = matches.index[0]
-                            logger.info(f"Found exact invoice match in column {column} at row {index}")
-                            return index
-
-                # If not found, try matching with just the part after the dash
-                dash_pos = unique_id.find('-')
-                if dash_pos > 0 and dash_pos < len(unique_id) - 1:
-                    suffix_part = unique_id[dash_pos + 1:]
-
-                    for column in [self.invoice_column, self.client_ref_column]:
-                        if column is not None:
-                            column_series = self.df[column].astype(str)
-                            matches = column_series[column_series.str.contains(suffix_part, na=False)]
-                            if not matches.empty:
-                                index = matches.index[0]
-                                logger.info(
-                                    f"Found invoice match by suffix part {suffix_part} in column {column} at row {index}")
-                                return index
-
-            # Add document-specific fallback strategies for various PDF types
-            if pdf_text:
-                # For OICL ADVICE PDF (Oriental Insurance)
-                if "oriental insurance" in pdf_text.lower() or "hsbc" in pdf_text.lower():
-                    # Look for specific patterns
-                    if "510000/11/2024" in pdf_text or "510000/11/2025" in pdf_text:
-                        # Try to find any row with a similar pattern
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains("510000|2024|2025", na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"OICL fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For UNITED ADVICE PDF
-                elif "united india insurance" in pdf_text.lower() or "axis bank" in pdf_text.lower():
-                    # Look for patterns like 5004xxxxxx
-                    if "5004" in pdf_text:
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains("5004|2502", na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"United fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For HDFC ERGO PDF
-                elif "hdfc ergo" in pdf_text.lower():
-                    # Look for claim number pattern C299924024364-1
-                    claim_pattern = r'C\d+\-\d+'
-                    claim_match = re.search(claim_pattern, pdf_text)
-                    if claim_match:
-                        claim_ref = claim_match.group(0)
-                        # Try to find a row with this pattern
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(claim_ref, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"HDFC ERGO fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For Tata AIG PDF
-                elif "tata aig" in pdf_text.lower() or "payment details for" in pdf_text.lower():
-                    # Look for invoice/claim number pattern
-                    invoice_pattern = r'2425\s*\-\s*\d{5}'
-                    invoice_match = re.search(invoice_pattern, pdf_text)
-                    if invoice_match:
-                        invoice_ref = invoice_match.group(0).replace(' ', '')
-                        # Try to find a row with this invoice number
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"Tata AIG fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For CERA Sanitaryware PDF
-                elif "cera sanitaryware" in pdf_text.lower():
-                    # Typically contain multiple invoice entries, look for pattern 2425-xxxxx
-                    invoice_pattern = r'2425\-\d{5}'
-                    invoice_matches = re.findall(invoice_pattern, pdf_text)
-                    if invoice_matches:
-                        # Try matching each invoice
-                        for invoice_ref in invoice_matches:
-                            for column in [self.invoice_column, self.client_ref_column]:
-                                if column is not None:
-                                    column_series = self.df[column].astype(str)
-                                    matches = column_series[column_series.str.contains(invoice_ref, na=False)]
-                                    if not matches.empty:
-                                        index = matches.index[0]
-                                        logger.info(f"CERA fallback match found in column {column} at row {index}")
-                                        return index
-
-                # For Liberty Insurance PDF
-                elif "liberty" in pdf_text.lower() or "liber" in pdf_text.lower():
-                    # Try to find the reference number
-                    ref_pattern = r'your\s+reference\s*:\s*(\d+)'
-                    ref_match = re.search(ref_pattern, pdf_text, re.IGNORECASE)
-                    if ref_match:
-                        ref_number = ref_match.group(1)
-                        # Try to find a row with this reference
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(ref_number, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"Liberty fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For National Insurance/IFFCO Tokio PDF (Hindi bilingual)
-                elif "national insurance" in pdf_text.lower() or "iffco" in pdf_text.lower():
-                    # Try to extract using sub claim number
-                    sub_claim_pattern = r'sub\s+claim\s+no.*?(\d+\-\d+)'
-                    sub_claim_match = re.search(sub_claim_pattern, pdf_text, re.IGNORECASE | re.DOTALL)
-                    if sub_claim_match:
-                        sub_claim = sub_claim_match.group(1)
-                        # Try to find a row with this sub claim
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(sub_claim, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(
-                                        f"National/IFFCO fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For Reliance/Future Generali/Universal Sompo PDF
-                elif any(insurer in pdf_text.lower() for insurer in ["reliance", "future", "sompo"]):
-                    # Look for invoice reference like 2425-xxxxx
-                    invoice_pattern = r'2425\-\d{5}'
-                    invoice_match = re.search(invoice_pattern, pdf_text)
-                    if invoice_match:
-                        invoice_ref = invoice_match.group(0)
-                        # Try to find a row with this invoice
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"Insurer fallback match found in column {column} at row {index}")
-                                    return index
-
-                # For New India Payment Advice (email format)
-                elif "new india" in pdf_text.lower() or "payment of rs" in pdf_text.lower():
-                    # Look for invoice/claim number pattern
-                    invoice_pattern = r'2425\-\d{5}'
-                    invoice_match = re.search(invoice_pattern, pdf_text)
-                    if invoice_match:
-                        invoice_ref = invoice_match.group(0)
-                        # Try to find a row with this invoice
-                        for column in [self.invoice_column, self.client_ref_column]:
-                            if column is not None:
-                                column_series = self.df[column].astype(str)
-                                matches = column_series[column_series.str.contains(invoice_ref, na=False)]
-                                if not matches.empty:
-                                    index = matches.index[0]
-                                    logger.info(f"New India fallback match found in column {column} at row {index}")
-                                    return index
-
-            # Final fallback: Try to match using invoice patterns commonly found in PDF files
-            invoice_pattern = r'2425-\d{5}'
-            invoice_matches = re.findall(invoice_pattern, pdf_text) if pdf_text else []
-
-            if invoice_matches:
-                # Try each extracted invoice number
-                for invoice in invoice_matches:
-                    for column in [self.invoice_column, self.client_ref_column]:
-                        if column is not None:
-                            column_series = self.df[column].astype(str)
-                            matches = column_series[column_series.str.contains(invoice, na=False)]
-                            if not matches.empty:
-                                index = matches.index[0]
-                                logger.info(f"Invoice pattern fallback match found in column {column} at row {index}")
-                                return index
-
+            # No exact match found - that's all we try with strict matching
+            logger.warning(f"No exact match found for ID: {unique_id}")
             return None
 
         except Exception as e:

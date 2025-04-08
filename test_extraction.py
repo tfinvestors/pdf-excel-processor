@@ -114,7 +114,7 @@ def manual_api_test(pdf_path):
 
 if __name__ == "__main__":
     # Replace with your actual PDF path
-    pdf_path = r"D:\My Downloads\Cera Sanitaryware Ltd.pdf"
+    pdf_path = r"C:\Users\Lenovo\Downloads\12437-16 Sale deed.pdf"
 
     print("=== Manual API Test ===")
     manual_api_test(pdf_path)
