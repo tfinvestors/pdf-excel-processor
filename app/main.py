@@ -5,6 +5,9 @@ import logging
 import traceback
 import json
 import re
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 from config import Config
 
@@ -16,8 +19,8 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("pdf_excel_processing.log")
+        logging.StreamHandler(stream=sys.stdout),  # Use stdout with UTF-8 config
+        logging.FileHandler("pdf_processing.log", encoding='utf-8')  # Add encoding here
     ]
 )
 logger = logging.getLogger("main")
@@ -166,6 +169,24 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     results['unprocessed'] += 1
                     results['files']['unprocessed'].append(pdf_file)
                     continue
+
+                # National Insurance - After extracting text, before calling extract_data_points
+                if "Sub Claim No" in extracted_text and "National Insurance" in extracted_text:
+                    # Direct extraction of Sub Claim No for National Insurance
+                    claim_match = re.search(r'(\d+-\d+)\s+[A-Z\s]+\s+\d{2}-\d{2}-\d{4}', extracted_text)
+                    if claim_match:
+                        direct_claim_id = claim_match.group(1)
+                        logger.info(f"Direct extraction found claim ID: {direct_claim_id}")
+
+                        # Use this ID with extract_data_points
+                        extraction_result = pdf_processor.extract_data_points(extracted_text)
+
+                        # Override the unique_id if needed
+                        if isinstance(extraction_result, tuple) and len(extraction_result) >= 3:
+                            unique_id, data_points, table_data = extraction_result[:3]
+                            if not unique_id or "बीिमत" in unique_id:
+                                logger.info(f"Overriding extracted ID with direct match: {direct_claim_id}")
+                                unique_id = direct_claim_id
 
                 # Special handling for ICICI Lombard table documents
                 if "CLAIM_REF_NO" in extracted_text and "LAE Invoice No" in extracted_text and "TRF AMOUNT" in extracted_text:

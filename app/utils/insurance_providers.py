@@ -20,7 +20,7 @@ INSURANCE_PROVIDERS = {
             "oriental": ["oriental insurance", "oicl", "the oriental insurance", "Oriental Insurance Co Ltd",
                          "the Oriental Insurance Co Ltd"],
             "rgcargo": ["RG Cargo Services Private Limited", "rg cargo services private limited", "RG Cargo",
-                        "rg cargo"],
+                        "rg cargo", "rgcargo"],
             "reliance": ["reliance general", "RELIANCE GENERAL", "reliance general insuraance",
                          "RELIANCE GENERAL INSURAANCE"],
             "tata_aig": ["tata aig", "tataaig", "tataaig.com", "TATA AIG General Insurance Company Ltd",

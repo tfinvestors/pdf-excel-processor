@@ -3,6 +3,10 @@ import pandas as pd
 import openpyxl
 import logging
 import re
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 from openpyxl.styles import PatternFill, Font
 from datetime import datetime
 from app.utils.insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
@@ -12,8 +16,8 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("excel_processing.log")
+        logging.StreamHandler(stream=sys.stdout),  # Use stdout with UTF-8 config
+        logging.FileHandler("pdf_processing.log", encoding='utf-8')  # Add encoding here
     ]
 )
 logger = logging.getLogger("excel_handler")
@@ -229,7 +233,22 @@ class ExcelHandler:
 
             # Clean the unique_id to improve matching chances
             # Remove any unwanted characters that might interfere with matching
-            cleaned_id = re.sub(r'[^A-Za-z0-9/-]', '', unique_id)
+            # Use a more tailored approach that preserves the important parts
+            if unique_id:
+                # For IDs with Roman letters and numbers, clean carefully
+                if re.search(r'[A-Za-z0-9]', unique_id):
+                    cleaned_id = re.sub(r'[^A-Za-z0-9/-]', '', unique_id)
+                    # Also remove any newline characters and spaces
+                    cleaned_id = cleaned_id.replace('\n', '').replace(' ', '')
+                    logger.info(f"Cleaned ID for matching: {cleaned_id}")
+                else:
+                    # For non-Roman script IDs, try to find a number pattern
+                    number_match = re.search(r'(\d+-\d+|\d{10,})', text)
+                    if number_match:
+                        cleaned_id = number_match.group(1)
+                        logger.info(f"Extracted numeric ID from context: {cleaned_id}")
+                    else:
+                        cleaned_id = unique_id  # Keep as is if no better option
             logger.info(f"Cleaned ID for matching: {cleaned_id}")
 
             # Check if this is an ICICI Lombard document with "ENG" pattern
@@ -287,6 +306,34 @@ class ExcelHandler:
                         index = exact_matches.index[0]
                         logger.info(f"Found exact match for invoice_no in column {self.invoice_column} at row {index}")
                         return index
+
+            # Reliance - Add this at the beginning of the find_row_by_identifiers method in excel_handler.py
+            if pdf_text and "RELIANCE GENERAL INSURAANCE" in pdf_text:
+                # For Reliance documents, specifically look for the invoice number in Payment Details 5
+                invoice_pattern = r'Payment\s+Details\s+5\s*:?\s*(\d{4}-\d{4,5})'
+                invoice_match = re.search(invoice_pattern, pdf_text, re.IGNORECASE)
+                if invoice_match:
+                    invoice_id = invoice_match.group(1).strip()
+                    logger.info(f"Reliance document: Using invoice number from Payment Details 5: {invoice_id}")
+
+                    # Try matching this invoice ID directly
+                    if self.invoice_column is not None:
+                        column_series = self.df[self.invoice_column].astype(str)
+                        exact_matches = column_series[column_series == invoice_id]
+                        if not exact_matches.empty:
+                            index = exact_matches.index[0]
+                            logger.info(
+                                f"Found exact match for Reliance invoice in column {self.invoice_column} at row {index}")
+                            return index
+
+            # For RG Cargo check if the unique_id is just "Invoice" (column header issue)
+            if unique_id == "Invoice" and pdf_text:
+                # Try to extract real invoice numbers from text
+                invoice_matches = re.findall(r'(\d{4}-\d{5})', pdf_text)
+                if invoice_matches:
+                    logger.info(
+                        f"Replacing generic 'Invoice' ID with actual invoice number: {invoice_matches[0]}")
+                    unique_id = invoice_matches[0]
 
             # If no match found and we have an invoice number, try matching that (ICICI specific case)
             if 'invoice_no' in data_points and data_points['invoice_no']:

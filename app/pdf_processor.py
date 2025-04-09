@@ -9,17 +9,21 @@ import numpy as np
 import concurrent.futures
 import json
 import requests
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 
 # Import unified PDF text extractor
 from app.utils.pdf_text_extractor import PDFTextExtractor
 from app.utils.insurance_providers import INSURANCE_PROVIDERS, SPECIFIC_TDS_RATE_PROVIDERS, NEW_INDIA_THRESHOLD
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("pdf_processing.log")
+        logging.StreamHandler(stream=sys.stdout),  # Use stdout with UTF-8 config
+        logging.FileHandler("pdf_processing.log", encoding='utf-8')  # Add encoding here
     ]
 )
 logger = logging.getLogger("pdf_processor")
@@ -644,15 +648,14 @@ class PDFProcessor:
 
             # Extract claim number
             claim_patterns = [
-                r'claim#\s*.*?(\d{10}c\d{8})',
-                r'claim\s*[\s#:]*\s*(\d{10}c\d{8})',
-                r'(\d{10}c\d{8})',
+                r'Claim#\s*.*?(\d{10}[cC]\d{9})',  # Updated to capture 9 digits after C
+                r'claim\s*[\s#:]*\s*(\d{10}[cC]\d{9})',  # Updated pattern
+                r'(\d{10}[cC]\d{9})',  # Updated to capture complete number
+                r'Enrichment:[\s\S]*?Claim#\s*[\s\n]*(\d{10}[cC]\d{9})',  # New pattern to capture across newlines
                 r'claim#\s*(5004\d{10})',
                 r'payment\s+ref\.\s+no\.\s*:\s*(\d{18})',
                 r'(5004\d{10})',
                 r'claim#\s*(\d{19})',
-                r'enrichment:[\s\S]*?claim#\s*(\S+)',
-                r'2502\d+C\d+',
             ]
 
             for pattern in claim_patterns:
@@ -906,7 +909,113 @@ class PDFProcessor:
                     logger.debug(f"Extracted Future Generali date: {data['receipt_date']}")
                     break
 
-        elif detected_provider in ["iffco_tokio", "national"]:
+        elif detected_provider == "national":
+            logger.debug("Extracting data using National Insurance patterns")
+
+            # Try parsing the full table row structure first - most reliable method
+            table_row_pattern = r'(\d+)\s+(\d{18})\s+(\d+-\d+)\s+([A-Z\s]+)\s+(\d{2}-\d{2}-\d{4})\s+(\d+)(?:\s*CMS\d+)?\s+(\d+)\s+(\d+)\s+(\d+)'
+            table_match = re.search(table_row_pattern, text, re.DOTALL)
+
+            if table_match:
+                # Extract all values from the table row
+                processing_code, policy_number, sub_claim_no, insured_name, settlement_date, payment_ref, gross_amount, tds_amount, net_amount = table_match.groups()
+
+                # Look for Payment Date specifically in the header, which is more reliable
+                payment_date_pattern = r'भुगतान\s+सलाह\s+की\s+तारीख/Payment\s+Date:(\d{2}/\d{2}/\d{4})'
+                payment_date_match = re.search(payment_date_pattern, text)
+
+                data['unique_id'] = sub_claim_no.strip()
+                data['policy_no'] = policy_number.strip()
+                # Use Payment Date from the header if found, otherwise fall back to settlement date
+                if payment_date_match:
+                    data['receipt_date'] = payment_date_match.group(1).strip()
+                else:
+                    data['receipt_date'] = settlement_date.strip()
+                data['receipt_amount'] = net_amount.strip()  # Use Net Amount as receipt amount
+                data['gross_amount'] = gross_amount.strip()
+                data['tds'] = tds_amount.strip()
+                data['tds_computed'] = 'No'
+
+                logger.debug(f"Extracted complete National Insurance payment row")
+                return data, detected_provider
+
+            # If direct table pattern fails, fall back to individual field extraction
+            # Extract claim number
+            sub_claim_pattern = r'उप\s+दावा\s+सं(?:[^\n]*?)(\d+(?:-\d+)+)'
+            alt_pattern = r'Sub\s+Claim\s+No(?:[^\n]*?)(\d+(?:-\d+)+)'
+
+            for pattern in [sub_claim_pattern, alt_pattern]:
+                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if claim_match:
+                    data['unique_id'] = claim_match.group(1).strip()
+                    logger.debug(f"Extracted National Insurance sub claim number: {data['unique_id']}")
+                    break
+
+            # If claim number not found via specific fields, try the structured pattern
+            if 'unique_id' not in data or not data['unique_id']:
+                structured_pattern = r'(\d{18})\s+(\d+-\d+)'
+                structured_match = re.search(structured_pattern, text)
+                if structured_match:
+                    data['unique_id'] = structured_match.group(2).strip()
+                    logger.debug(f"Extracted National Insurance structured claim number: {data['unique_id']}")
+
+            # Extract Net Paid Amount - look for the specific pattern at the end of a line
+            amount_patterns = [
+                # Pattern to find the three numeric values at the end of a line (Gross, TDS, Net)
+                r'(\d{5})\s+(\d{4})\s+(\d{5})$',
+                r'शुद्ध\s+भुगतान\s+राशि.*?(\d{5})',
+                r'Net\s+Paid\s+Amount.*?(\d{5})',
+                # More general pattern
+                r'Net\s+Paid\s+Amount[^0-9]*(\d+)',
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+                if amount_match:
+                    # If it's the pattern with 3 groups, use the last one (Net Amount)
+                    if len(amount_match.groups()) == 3:
+                        data['receipt_amount'] = amount_match.group(3).strip()
+                        # Also extract the other values while we're here
+                        data['gross_amount'] = amount_match.group(1).strip()
+                        data['tds'] = amount_match.group(2).strip()
+                        data['tds_computed'] = 'No'
+                    else:
+                        data['receipt_amount'] = amount_match.group(1).strip()
+                    logger.debug(f"Extracted National Insurance amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date from Settlement Date field or Payment Date
+            date_patterns = [
+                r'भुगतान\s+सलाह\s+की\s+तारीख.*?(\d{2}/\d{2}/\d{4})',
+                r'Payment\s+Date.*?(\d{2}/\d{2}/\d{4})',
+                r'िन(?:[^\n]*?)तारीख(?:[^0-9]*?)(\d{2}-\d{2}-\d{4})',
+                r'Settlement\s+Date(?:[^0-9]*?)(\d{2}-\d{2}-\d{4})',
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted National Insurance date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS if not already extracted
+            if 'tds' not in data:
+                tds_patterns = [
+                    r'टीडीएस\s+रािश(?:[^0-9]*?)(\d+)',
+                    r'TDS\s+Amount(?:[^0-9]*?)(\d+)',
+                    r'/TDS\s+Amount\s*\n(\d+)',
+                ]
+
+                for pattern in tds_patterns:
+                    tds_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                    if tds_match:
+                        data['tds'] = tds_match.group(1).strip()
+                        data['tds_computed'] = 'No'
+                        logger.debug(f"Extracted National Insurance TDS: {data['tds']}")
+                        break
+
+        elif detected_provider in ["iffco_tokio"]:
             # IFFCO Tokio or National Insurance format
             logger.debug(f"Extracting data using {detected_provider} patterns")
 
@@ -1440,6 +1549,97 @@ class PDFProcessor:
                     logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
                     break
 
+        elif detected_provider == "rgcargo":
+            logger.debug("Extracting data using RG Cargo patterns")
+
+            # Extract the invoice numbers
+            invoice_pattern = r'(\d{4}-\d{5})'
+            invoice_matches = re.findall(invoice_pattern, text)
+
+            if invoice_matches:
+                # Use the first invoice number as unique ID
+                data['unique_id'] = invoice_matches[0].strip()
+                logger.debug(f"Extracted RG Cargo invoice number: {data['unique_id']}")
+
+                # Find corresponding date for this invoice
+                date_pattern = f"{data['unique_id']}\\s+(\\d{{2}}-\\d{{2}}-\\d{{4}})"
+                date_match = re.search(date_pattern, text)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+
+                # Extract TDS amount - in your document it's the second-to-last column
+                tds_pattern = f"{data['unique_id']}.*?\\d+\\s+\\d+\\s+\\d+\\s+(\\d+)\\s+-\\d+"
+                tds_match = re.search(tds_pattern, text)
+                if tds_match:
+                    data['tds'] = tds_match.group(1).strip()
+                    data['tds_computed'] = 'No'
+
+                # Extract net amount (negative in your document)
+                net_pattern = f"{data['unique_id']}.*?\\d+\\s+\\d+\\s+\\d+\\s+\\d+\\s+(-\\d+)"
+                net_match = re.search(net_pattern, text)
+                if net_match:
+                    data['receipt_amount'] = net_match.group(1).strip()
+
+        elif detected_provider == "reliance":
+            logger.debug("Extracting data using Reliance General Insurance patterns")
+
+            # First look for invoice number in Payment Details 5 which is the actual identifier
+            invoice_pattern = r'Payment\s+Details\s+5\s*:?\s*(\d{4}-\d{4,5})'
+            invoice_match = re.search(invoice_pattern, text, re.IGNORECASE)
+            if invoice_match:
+                data['unique_id'] = invoice_match.group(1).strip()
+                logger.debug(f"Extracted Reliance invoice number: {data['unique_id']}")
+
+            # Look for claim/reference details in other fields as fallback
+            if 'unique_id' not in data:
+                ref_patterns = [
+                    r'Payment\s+Details\s+1\s*:?\s*(\S+)',
+                    r'Client\s+Ref\s+No\s*:?\s*(\S+)',
+                    r'Payment\s+Details\s+7\s*:?\s*(\S+)'
+                ]
+
+                for pattern in ref_patterns:
+                    ref_match = re.search(pattern, text, re.IGNORECASE)
+                    if ref_match:
+                        data['unique_id'] = ref_match.group(1).strip()
+                        logger.debug(f"Extracted Reliance reference as fallback: {data['unique_id']}")
+                        break
+
+            # Extract amount
+            amount_patterns = [
+                r'amount\s+of\s*Rs\.?(\d+)',
+                r'Rs\.(\d+)\s+through',
+                r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)'
+            ]
+
+            for pattern in amount_patterns:
+                amount_match = re.search(pattern, text, re.IGNORECASE)
+                if amount_match:
+                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                    logger.debug(f"Extracted Reliance amount: {data['receipt_amount']}")
+                    break
+
+            # Extract date
+            date_patterns = [
+                r'Date\s*:?\s*(\d{1,2}/\d{1,2}/\d{4})',
+                r'Date\s*:?\s*(\d{1,2}-\d{1,2}-\d{4})'
+            ]
+
+            for pattern in date_patterns:
+                date_match = re.search(pattern, text, re.IGNORECASE)
+                if date_match:
+                    data['receipt_date'] = date_match.group(1).strip()
+                    logger.debug(f"Extracted Reliance date: {data['receipt_date']}")
+                    break
+
+            # Extract TDS if available (Payment Details 4)
+            tds_pattern = r'Payment\s+Details\s+4\s*:?\s*(\d+)'
+            tds_match = re.search(tds_pattern, text, re.IGNORECASE)
+            if tds_match:
+                data['tds'] = tds_match.group(1).strip()
+                data['tds_computed'] = 'No'  # TDS already in document
+                logger.debug(f"Extracted Reliance TDS: {data['tds']}")
+
         elif detected_provider in ["cholamandalam"]:
 
             logger.debug(f"Extracting data using {detected_provider} patterns")
@@ -1722,6 +1922,24 @@ class PDFProcessor:
                 # Set detected provider
                 detected_provider = "new_india"
 
+        # Fallback for table structure (especially for National Insurance docs)
+        if not unique_id and 'Sub Claim No' in text:
+            # Look for a pattern with multiple columns in a row - policy number, sub claim, etc.
+            table_pattern = r'(\d{18})\s+(\d+-\d+)\s+([A-Z\s]+)'
+            table_match = re.search(table_pattern, text)
+            if table_match:
+                unique_id = table_match.group(2).strip()
+                logger.info(f"Found unique ID using table structure extraction: {unique_id}")
+
+                # Also try to extract other data
+                if 'receipt_amount' not in data_points:
+                    # Look ahead for amounts in the same row
+                    amount_match = re.search(fr'{re.escape(unique_id)}.*?(\d+)\s+(\d+)\s+(\d+)', text)
+                    if amount_match:
+                        data_points['receipt_amount'] = amount_match.group(3).strip()  # Net amount is usually last
+                        data_points['tds'] = amount_match.group(2).strip()  # TDS is usually middle
+                        data_points['tds_computed'] = 'No'
+
         # ICICI Lombard specific method to extract data points
         if "CLAIM_REF_NO" in text and "LAE Invoice No" in text and "TRF AMOUNT" in text:
             logger.info("Detected ICICI Lombard claim table format")
@@ -1811,6 +2029,38 @@ class PDFProcessor:
             # Look for the split pattern
             if re.search(r'OC-24-1501-4089[\s\n]+00000009', text):
                 logger.info("Document contains split claim ID pattern")
+
+        # Reliance - Add this as a fallback check in extract_data_points, just before returning
+        if not unique_id or unique_id.startswith('*'):
+            # Try to find a standard invoice number pattern (2425-13641)
+            invoice_pattern = r'Payment\s+Details\s+5\s*:?\s*(\d{4}-\d{4,5})'
+            invoice_match = re.search(invoice_pattern, text, re.IGNORECASE)
+            if invoice_match:
+                unique_id = invoice_match.group(1).strip()
+                logger.info(f"Fallback: Using invoice number from Payment Details 5: {unique_id}")
+            else:
+                # More general pattern to catch any invoice number
+                general_pattern = r'\d{4}-\d{5}'
+                general_match = re.search(general_pattern, text)
+                if general_match:
+                    unique_id = general_match.group(0).strip()
+                    logger.info(f"Fallback: Found invoice pattern: {unique_id}")
+
+        # SPECIAL HANDLING for RG Cargo: For tabular invoice documents with header "Invoice No."
+        if "Invoice No." in text and len(
+                re.findall(r'\d{4}-\d{5}', text)) > 5:  # Many invoice numbers in XXXX-XXXXX format
+            logger.info("Detected tabular invoice document with multiple invoice numbers")
+
+            # Extract the first invoice number as the primary identifier
+            invoice_matches = re.findall(r'(\d{4}-\d{5})', text)
+            if invoice_matches:
+                unique_id = invoice_matches[0]  # Use the first invoice number
+                logger.info(f"Using first invoice number as unique ID: {unique_id}")
+
+                # Also populate table_data with all invoice numbers
+                table_data = self.extract_table_data(text)
+
+                return unique_id, data_points, table_data, detected_provider
 
         # Add Universal Sompo specific extraction for the full amount
         if detected_provider == "universal_sompo":
@@ -2665,7 +2915,31 @@ class PDFProcessor:
                     })
                     logger.info(f"Added claim {claim_no} with direct extraction approach")
 
-        # 10. Look for table with invoice numbers and amounts (generic pattern)
+        # 10. Check for RG Cargo table format (specific to your document)
+        if "Invoice No. Invoice Date F.Y. Client" in text and "RG Cargo Services Private Limited" in text:
+            logger.info("Detected RG Cargo Services invoice table format")
+
+            # Extract rows with invoice pattern
+            rows = re.findall(
+                r'(\d{4}-\d{5})\s+(\d{2}-\d{2}-\d{4})\s+(\d{4}-\d{2})\s+([^\n]+?)(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(-\d+)',
+                text)
+
+            for row in rows:
+                invoice_no, invoice_date, fy, client, total, igst, total_amount, tds, net = row
+
+                row_data = {
+                    'unique_id': invoice_no.strip(),
+                    'receipt_date': invoice_date.strip(),
+                    'receipt_amount': net.strip(),  # Note: The net amount is negative in your document
+                    'tds': tds.strip(),
+                    'tds_computed': 'No'  # TDS is already in the document
+                }
+
+                table_data.append(row_data)
+
+            logger.info(f"Extracted {len(table_data)} rows from RG Cargo invoice table")
+
+        # 11. Look for table with invoice numbers and amounts (generic pattern)
         invoice_rows = re.findall(r'(2425[-\s]\d{5})[^\n]*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text)
         for row in invoice_rows:
             # Check if this invoice is already in table_data
