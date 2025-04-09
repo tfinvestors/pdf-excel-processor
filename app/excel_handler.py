@@ -750,6 +750,11 @@ class ExcelHandler:
                 results['unprocessed'] += 1
                 continue
 
+            if 'receipt_date' in row_data and row_data['receipt_date'] and row_data['receipt_date'] != global_data[
+                'receipt_date']:
+                logger.info(
+                    f"Using table-specific receipt date: {row_data['receipt_date']} instead of global: {global_data.get('receipt_date')}")
+
             # Update the row with data
             success, updated_fields, failed_fields = self.update_row_with_data(excel_row_index, row_data, pdf_text)
 
