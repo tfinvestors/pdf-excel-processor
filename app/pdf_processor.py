@@ -253,7 +253,22 @@ class PDFProcessor:
         invoice_numbers = []
         table_data = []
 
-        # 1. First look specifically for the Cera structured table format
+        # 1. Extract document date with flexible pattern matching
+        date_patterns = [
+            r'Document\s*No\.\s*/\s*Date\s*.*?(\d{1,2}\.\d{1,2}\.\d{4})',
+            r'payment\s*made\s*on\s*(\d{1,2}\.\d{1,2}\.\d{4})',
+            r'Date\s*[:.]?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})'
+        ]
+
+        document_date = None
+        for pattern in date_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                document_date = match.group(1).strip()
+                logger.info(f"Extracted document date: {document_date}")
+                break
+
+        # 2. First look specifically for the Cera structured table format
         structured_table_pattern = r'Document\s+No\.\s+Bill\s+No\.\s+Bill\s+Date\s+Gross\s+Amount\s+TDS\s+Amount\s+Net\s+Amount'
         structured_table_match = re.search(structured_table_pattern, text, re.IGNORECASE)
 
@@ -288,7 +303,8 @@ class PDFProcessor:
                     # Create table data with the correct NET amount (not TDS)
                     row_data = {
                         'unique_id': bill_no,
-                        'receipt_date': formatted_date,
+                        'bill_date': formatted_date,  # Store Bill Date separately
+                        'receipt_date': document_date.replace('.', '-') if document_date else formatted_date,
                         'receipt_amount': net_amount.replace(',', ''),  # NET AMOUNT (not TDS)
                         'tds': tds_amount.replace(',', ''),
                         'tds_computed': 'No'  # We have the actual TDS from the document
@@ -314,21 +330,6 @@ class PDFProcessor:
             if match:
                 net_total = match.group(1).strip().replace(',', '.')
                 logger.info(f"Extracted Net Total amount: {net_total}")
-                break
-
-        # 3. Extract document date with flexible pattern matching
-        date_patterns = [
-            r'Document\s*No\.\s*/\s*Date\s*.*?(\d{1,2}\.\d{1,2}\.\d{4})',
-            r'payment\s*made\s*on\s*(\d{1,2}\.\d{1,2}\.\d{4})',
-            r'Date\s*[:.]?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})'
-        ]
-
-        document_date = None
-        for pattern in date_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                document_date = match.group(1).strip()
-                logger.info(f"Extracted document date: {document_date}")
                 break
 
         # 4. Find the table section by looking for key headers
@@ -371,7 +372,8 @@ class PDFProcessor:
 
                     row_data = {
                         'unique_id': bill_no,
-                        'receipt_date': formatted_date,
+                        'bill_date': formatted_date,  # Store Bill Date separately
+                        'receipt_date': document_date.replace('.', '-') if document_date else formatted_date,
                         'receipt_amount': net,  # IMPORTANT: Use NET AMOUNT
                         'tds': tds,
                         'tds_computed': 'No'
@@ -454,7 +456,8 @@ class PDFProcessor:
 
                     row_data = {
                         'unique_id': bill_no,
-                        'receipt_date': formatted_date,
+                        'bill_date': formatted_date,  # Store Bill Date separately
+                        'receipt_date': document_date.replace('.', '-') if document_date else formatted_date,
                         'receipt_amount': net,  # Use NET AMOUNT
                         'tds': tds,
                         'tds_computed': 'No'

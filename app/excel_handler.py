@@ -240,6 +240,8 @@ class ExcelHandler:
                     cleaned_id = re.sub(r'[^A-Za-z0-9/-]', '', unique_id)
                     # Also remove any newline characters and spaces
                     cleaned_id = cleaned_id.replace('\n', '').replace(' ', '')
+                    # Remove common prefixes like "Claim" or "Claim#"
+                    cleaned_id = re.sub(r'^(?:Claim|Claim#)', '', cleaned_id, flags=re.IGNORECASE)
                     logger.info(f"Cleaned ID for matching: {cleaned_id}")
                 else:
                     # For non-Roman script IDs, try to find a number pattern
