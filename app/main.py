@@ -6,7 +6,6 @@ import traceback
 import json
 import re
 import sys
-
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
@@ -53,15 +52,8 @@ def move_to_appropriate_folder(pdf_path, success, processed_dir, unprocessed_dir
         shutil.copy2(pdf_path, destination)
         return destination
 
-
-# Move get_output_dirs to module level instead of being inside process_files
+# Create output directories in user's Downloads folder
 def get_output_dirs():
-    """
-    Returns the output directories for processed and unprocessed PDFs.
-
-    Returns:
-        tuple: (processed_dir, unprocessed_dir) paths
-    """
     if 'STREAMLIT_SHARING' in os.environ:
         # In cloud environment, use directories in the app folder
         processed_dir = os.path.join('processed_pdf')
@@ -76,7 +68,6 @@ def get_output_dirs():
     os.makedirs(unprocessed_dir, exist_ok=True)
 
     return processed_dir, unprocessed_dir
-
 
 # Process_files function for better multi-PDF handling
 def process_files(excel_path, pdf_folder, progress_callback=None, status_callback=None, debug_mode=False):
@@ -302,8 +293,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     logger.debug(f"Saved full extracted text to {text_path}")
 
                 # Extract data points and potential table data
-                unique_id, data_points, table_data, detected_provider = pdf_processor.extract_data_points(
-                    extracted_text)
+                unique_id, data_points, table_data, detected_provider = pdf_processor.extract_data_points(extracted_text)
 
                 # Log extracted data
                 logger.info(f"Extracted unique ID: {unique_id}")
@@ -359,6 +349,8 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                     # Process the table data - pass the extracted data_points
                     table_results = excel_handler.process_multi_row_data(table_data, extracted_text, data_points)
 
+
+
                     if table_results['processed'] > 0:
                         if status_callback:
                             status_callback(
@@ -378,6 +370,8 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                         results['files']['unprocessed'].append(pdf_file)
 
                     continue  # Skip the single row processing since we've processed the table
+
+
 
                 # Case 2: The PDF contains a single row of data (standard case)
                 if not unique_id:
@@ -431,8 +425,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
 
                 # Update Excel row with extracted data
                 success, updated_fields, failed_fields = excel_handler.update_row_with_data(row_index, data_points,
-                                                                                            extracted_text,
-                                                                                            detected_provider)
+                                                                                            extracted_text, detected_provider)
 
                 if success:
                     if status_callback:
@@ -495,4 +488,7 @@ if __name__ == "__main__":
     pdf_folder = "path/to/your/pdf/folder"
 
     results = process_files(excel_path, pdf_folder)
-    print(f"Processed: {results['processed']}/{results['total']}")
+print(f"Processed: {results['processed']}/{results['total']}")
+
+
+
