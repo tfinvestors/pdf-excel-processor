@@ -18,6 +18,15 @@ from logging_utils import setup_logging
 logger, log_file = setup_logging("streamlit_pdf_app")
 logger.info("Streamlit application started")
 logger.info("TEST LOG - Application started")
+
+# THIS MUST BE THE FIRST STREAMLIT COMMAND
+st.set_page_config(
+    page_title="PDF Processing & Excel Update Tool",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 st.write("Direct test log message written")
 
 # Load environment variables from .env file if it exists
@@ -65,14 +74,6 @@ from app.auth.user_manager import UserManager
 db_path = 'data/users.db'
 os.makedirs(os.path.dirname(db_path), exist_ok=True)
 user_manager = UserManager(db_path=db_path)
-
-# Set page config
-st.set_page_config(
-    page_title="PDF Processing & Excel Update Tool",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Session state initialization
 if 'authenticated' not in st.session_state:
