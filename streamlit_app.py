@@ -17,6 +17,8 @@ from logging_utils import setup_logging
 # Setup logging at the start of your app
 logger, log_file = setup_logging("streamlit_pdf_app")
 logger.info("Streamlit application started")
+logger.info("TEST LOG - Application started")
+st.write("Direct test log message written")
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -206,14 +208,34 @@ def show_login_page():
     with st.sidebar:
         st.write(f"Logs are being written to: {log_file}")
         # Optional: Add a button to view logs
+        # Replace the existing log viewing button code in the sidebar
         if st.button("View Recent Logs"):
             try:
-                with open(log_file, 'r') as f:
-                    log_content = f.readlines()[-50:]  # Show last 50 lines
-                    st.code(''.join(log_content), language="text")
+                log_path = log_file
+                st.write(f"Attempting to read log file: {log_path}")
+
+                # Check if file exists
+                if not os.path.exists(log_path):
+                    st.error(f"Log file does not exist at: {log_path}")
+                else:
+                    # Check file size
+                    file_size = os.path.getsize(log_path)
+                    st.write(f"Log file exists. Size: {file_size} bytes")
+
+                    if file_size == 0:
+                        st.warning("Log file exists but is empty")
+                    else:
+                        with open(log_path, 'r') as f:
+                            log_content = f.readlines()[-50:]  # Show last 50 lines
+                            if not log_content:
+                                st.warning("No content found in log file (file may be empty)")
+                            else:
+                                st.code(''.join(log_content), language="text")
             except Exception as e:
-                st.error(f"Couldn't read log file: {str(e)}")
-                logger.error(f"Error reading log file: {str(e)}")
+                st.error(f"Error reading log file: {str(e)}")
+                # Print more detailed exception info
+                import traceback
+                st.code(traceback.format_exc(), language="python")
 
     # Use columns for overall page layout
     col1, col2, col3 = st.columns([1, 2, 1])
