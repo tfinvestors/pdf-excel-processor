@@ -494,7 +494,7 @@ if __name__ == "__main__":
     pdf_folder = "path/to/your/pdf/folder"
 
     results = process_files(excel_path, pdf_folder)
-print(f"Processed: {results['processed']}/{results['total']}")
+    print(f"Processed: {results['processed']}/{results['total']}")
 
 
 
