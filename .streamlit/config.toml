@@ -8,6 +8,11 @@ font = "sans serif"
 [server]
 enableCORS = false
 enableXsrfProtection = true
+maxMessageSize = 200
+maxUploadSize = 200
 
 [browser]
 gatherUsageStats = false
+
+[server.timeout]
+app = 300
