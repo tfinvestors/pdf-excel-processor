@@ -10,36 +10,7 @@ import zipfile
 import datetime
 import json
 import platform
-import subprocess
-import sys
 from dotenv import load_dotenv
-
-# Check if spaCy model is available and install if needed
-def ensure_spacy_model():
-    try:
-        import spacy
-        # Try loading the model
-        try:
-            nlp = spacy.load("en_core_web_sm")
-            return True
-        except OSError:
-            # Model not found, install it
-            st.warning("Installing required language model. This may take a minute...")
-            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
-            # Verify installation
-            try:
-                nlp = spacy.load("en_core_web_sm")
-                st.success("Language model installed successfully!")
-                return True
-            except Exception as e:
-                st.error(f"Failed to install language model: {str(e)}")
-                return False
-    except Exception as e:
-        st.error(f"Error checking spaCy model: {str(e)}")
-        return False
-
-# Ensure the spaCy model is available
-ensure_spacy_model()
 
 # Load environment variables from .env file if it exists
 load_dotenv()
