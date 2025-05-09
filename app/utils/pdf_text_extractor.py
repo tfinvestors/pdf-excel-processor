@@ -12,8 +12,35 @@ import io
 import requests
 import concurrent.futures
 from PIL import Image, ImageEnhance
-import cv2
-import numpy as np
+
+try:
+    import cv2
+    import numpy as np
+
+    HAS_OPENCV = True
+except ImportError:
+    # Create mock CV2 for compatibility
+    class MockCV2:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+        # Mock essential functions used in your code
+        def fastNlMeansDenoising(self, *args, **kwargs):
+            return args[0]  # Return the input image unchanged
+
+        def adaptiveThreshold(self, src, maxValue, adaptiveMethod, thresholdType, blockSize, C):
+            return src  # Return the input image unchanged
+
+        # Add constants used in your code
+        ADAPTIVE_THRESH_GAUSSIAN_C = 0
+        THRESH_BINARY = 0
+
+
+    cv2 = MockCV2()
+    import numpy as np  # Still need numpy
+
+    HAS_OPENCV = False
+    logger.warning("OpenCV (cv2) import failed. Some image processing features will be limited.")
 import time
 import json
 import traceback
@@ -78,12 +105,30 @@ class PDFTextExtractor:
         self.debug_mode = debug_mode
         self.debug_dir = None
 
-        # Set Tesseract path for Windows
+        # Set platform-specific paths
         if os.name == 'nt':  # Windows
-            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            self.poppler_path = poppler_path or r'C:\poppler-24.08.0\Library\bin'
         elif 'STREAMLIT_SHARING' in os.environ:
-            # We're on Streamlit Cloud
-            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+            # On Streamlit Cloud, poppler is installed via packages.txt
+            self.poppler_path = None  # Use system path
+        else:
+            # Other Linux/Mac systems
+            self.poppler_path = poppler_path
+
+        # Set Tesseract path based on platform
+        try:
+            if os.name == 'nt':  # Windows
+                pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            elif 'STREAMLIT_SHARING' in os.environ:
+                # We're on Streamlit Cloud
+                pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+
+            # Verify Tesseract is available
+            tesseract_version = pytesseract.get_tesseract_version()
+            logger.info(f"Tesseract version: {tesseract_version}")
+        except Exception as e:
+            logger.warning(f"Could not set Tesseract path: {str(e)}")
+            logger.warning("OCR functionality may be limited")
 
         # Create debug directory if needed
         if self.debug_mode:
@@ -697,20 +742,27 @@ class PDFTextExtractor:
             enhancer = ImageEnhance.Contrast(img)
             img = enhancer.enhance(2.0)
 
-            # Convert to numpy array for OpenCV operations
-            img_np = np.array(img)
+            # Check if OpenCV is available for advanced preprocessing
+            if HAS_OPENCV:
+                # Convert to numpy array for OpenCV operations
+                img_np = np.array(img)
 
-            # Apply noise reduction
-            img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
+                # Apply noise reduction
+                img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
 
-            # Apply adaptive thresholding for better text extraction
-            img_np = cv2.adaptiveThreshold(
-                img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 11, 2
-            )
+                # Apply adaptive thresholding for better text extraction
+                img_np = cv2.adaptiveThreshold(
+                    img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY, 11, 2
+                )
 
-            # Return as PIL Image
-            return Image.fromarray(img_np)
+                # Return as PIL Image
+                return Image.fromarray(img_np)
+            else:
+                # If OpenCV is not available, return the contrast-enhanced image
+                logger.info("OpenCV not available. Using basic image preprocessing.")
+                return img
+
         except Exception as e:
             logger.warning(f"Image preprocessing error: {str(e)}")
             return img  # Return original image if preprocessing fails

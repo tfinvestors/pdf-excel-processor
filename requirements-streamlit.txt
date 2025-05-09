@@ -1,0 +1,17 @@
+streamlit>=1.28.0
+pandas>=1.3.0
+numpy>=1.20.0
+Pillow>=9.0.0
+python-dotenv>=0.20.0
+pytesseract>=0.3.8
+pdf2image>=1.16.0
+openpyxl>=3.0.9
+PyPDF2>=2.10.0
+spacy>=3.4.0
+joblib>=1.1.0
+scikit-learn>=1.0.0
+# Use a very stable headless version
+opencv-python-headless==4.5.4.60
+PyMuPDF>=1.19.0
+pdfplumber>=0.7.0
+requests>=2.27.1

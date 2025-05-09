@@ -30,6 +30,10 @@ logger = logging.getLogger("pdf_processor")
 
 
 class PDFProcessor:
+    def _has_nlp(self):
+        """Check if NLP model is available"""
+        return self.nlp is not None
+
     def __init__(self, use_ml=True, debug_mode=False, poppler_path=None, text_extraction_api_url=None):
         """
         Initialize the PDF processor.
@@ -62,11 +66,23 @@ class PDFProcessor:
         # Load NLP model for text analysis
         try:
             self.nlp = spacy.load("en_core_web_sm")
-        except:
-            # If model not found, download it
-            import subprocess
-            subprocess.call(["python", "-m", "spacy", "download", "en_core_web_sm"])
-            self.nlp = spacy.load("en_core_web_sm")
+            logger.info("Loaded spaCy model: en_core_web_sm")
+        except OSError:
+            # Try to download the model if not available
+            logger.warning("spaCy model not found. Attempting to download...")
+            try:
+                import subprocess
+                import sys
+                subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+                self.nlp = spacy.load("en_core_web_sm")
+                logger.info("Downloaded and loaded spaCy model: en_core_web_sm")
+            except Exception as e:
+                logger.error(f"Failed to download spaCy model: {str(e)}")
+                logger.warning("Using fallback processing without NLP model")
+                self.nlp = None
+        except Exception as e:
+            logger.error(f"Error loading spaCy model: {str(e)}")
+            self.nlp = None
 
         # Load ML model if available and use_ml is True
         self.ml_model = None
@@ -2258,7 +2274,7 @@ class PDFProcessor:
                 logger.info(f"Found unique ID from Cholamandalam payment details: {unique_id}")
 
         # FIFTH PRIORITY: Use ML model to enhance extraction if available
-        if self.ml_model and self.use_ml:
+        if self._has_nlp():
             try:
                 # Use model to predict additional fields or correct existing ones
                 ml_enhanced_data = self.ml_model.predict([text])[0]
