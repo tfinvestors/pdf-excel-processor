@@ -11,6 +11,11 @@ import datetime
 import json
 import platform
 from dotenv import load_dotenv
+from logging_utils import setup_logging
+
+# Setup logging at the start of your app
+logger, log_file = setup_logging("streamlit_pdf_app")
+logger.info("Streamlit application started")
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -189,12 +194,26 @@ def navigate_to(page):
 def log_user_activity(activity_type, details):
     """Log user activity if authenticated."""
     if st.session_state.authenticated and st.session_state.user_data:
+        logger.info(f"User activity: {activity_type} - {details}")
         user_manager.log_activity(st.session_state.user_data['id'], activity_type, details)
 
 
 # Authentication pages
 def show_login_page():
     """Display the login page."""
+    # Add logs view to sidebar
+    with st.sidebar:
+        st.write(f"Logs are being written to: {log_file}")
+        # Optional: Add a button to view logs
+        if st.button("View Recent Logs"):
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.readlines()[-50:]  # Show last 50 lines
+                    st.code(''.join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Couldn't read log file: {str(e)}")
+                logger.error(f"Error reading log file: {str(e)}")
+
     # Use columns for overall page layout
     col1, col2, col3 = st.columns([1, 2, 1])
 
@@ -215,6 +234,7 @@ def show_login_page():
                 submit_button = st.form_submit_button("Login")
 
                 if submit_button:
+                    logger.info(f"Login attempt for user: {username}")
                     if username and password:
                         success, result = user_manager.authenticate_user(username, password)
 
@@ -223,12 +243,15 @@ def show_login_page():
                             st.session_state.authenticated = True
                             st.session_state.user_data = result
                             st.session_state.current_page = 'main'
+                            logger.info(f"Login successful for user: {username}")
 
                             # Force a rerun to update the UI
                             st.rerun()
                         else:
+                            logger.warning(f"Login failed for user: {username} - {result}")
                             st.markdown(f"<div class='error-msg'>Login failed: {result}</div>", unsafe_allow_html=True)
                     else:
+                        logger.warning("Login attempt with empty username or password")
                         st.markdown("<div class='error-msg'>Please enter both username and password</div>",
                                     unsafe_allow_html=True)
 
@@ -238,6 +261,7 @@ def show_login_page():
             st.markdown("<h3>New User?</h3>", unsafe_allow_html=True)
             register_btn = st.button("Register", key="register_button")
             if register_btn:
+                logger.info("User navigating to registration page")
                 st.session_state.current_page = 'register'
                 st.rerun()
 
@@ -246,6 +270,19 @@ def show_login_page():
 
 def show_register_page():
     """Display the registration page."""
+    # Add logs view to sidebar
+    with st.sidebar:
+        st.write(f"Logs are being written to: {log_file}")
+        # Optional: Add a button to view logs
+        if st.button("View Recent Logs"):
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.readlines()[-50:]  # Show last 50 lines
+                    st.code(''.join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Couldn't read log file: {str(e)}")
+                logger.error(f"Error reading log file: {str(e)}")
+
     st.markdown("<h1 class='main-header'>PDF Processing & Excel Update Tool</h1>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -264,9 +301,12 @@ def show_register_page():
             submit_button = st.form_submit_button("Register")
 
             if submit_button:
+                logger.info(f"Registration attempt for username: {username}, email: {email}")
                 if not all([username, email, password, confirm_password]):
+                    logger.warning("Registration attempt with missing fields")
                     st.error("Please fill in all required fields")
                 elif password != confirm_password:
+                    logger.warning("Registration attempt with mismatched passwords")
                     st.error("Passwords do not match")
                 else:
                     success, result = user_manager.register_user(
@@ -277,12 +317,14 @@ def show_register_page():
                     )
 
                     if success:
+                        logger.info(f"Registration successful for user: {username}")
                         st.success("Registration successful! You can now login.")
                         # Automatically navigate to login page after a short delay
                         st.info("Redirecting to login page...")
                         st.session_state.current_page = 'login'
                         st.rerun()
                     else:
+                        logger.warning(f"Registration failed for user: {username} - {result}")
                         st.error(f"Registration failed: {result}")
 
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
@@ -290,6 +332,7 @@ def show_register_page():
         # Login link
         st.markdown("<h3>Already have an account?</h3>", unsafe_allow_html=True)
         if st.button("Login"):
+            logger.info("User navigating to login page")
             navigate_to('login')
 
 
@@ -306,26 +349,49 @@ def show_main_page():
             width=100)
         st.markdown(f"**👤 Logged in as:** {st.session_state.user_data['username']}")
 
+        # Add log viewing capability
+        st.write(f"Logs are being written to: {log_file}")
+        # Optional: Add a button to view logs
+        if st.button("View Recent Logs"):
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.readlines()[-50:]  # Show last 50 lines
+                    st.code(''.join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Couldn't read log file: {str(e)}")
+                logger.error(f"Error reading log file: {str(e)}")
+
+        # Debug toggle
+        if st.checkbox("Enable Debug Logging"):
+            logger.setLevel(logging.DEBUG)
+            st.info("Debug logging enabled")
+        else:
+            logger.setLevel(logging.INFO)
+
         # Navigation
         st.markdown("### 🧭 Navigation")
         if st.button("🏠 Dashboard"):
+            logger.info("User navigating to dashboard")
             st.session_state.current_page = 'main'
 
         # Admin section
         if st.session_state.user_data.get('is_admin'):
             st.markdown("### 👑 Administration")
             if st.button("👥 User Management"):
+                logger.info("Admin navigating to user management")
                 st.session_state.current_page = 'admin'
                 st.rerun()
 
         # Account
         st.markdown("### 🔐 Account")
         if st.button("🔑 Change Password"):
+            logger.info("User navigating to change password")
             st.session_state.current_page = 'change_password'
             st.rerun()
 
         # Logout
         if st.button("🚪 Logout"):
+            logger.info(f"User logging out: {st.session_state.user_data['username']}")
             if st.session_state.user_data and 'session_token' in st.session_state.user_data:
                 user_manager.logout_user(st.session_state.user_data['session_token'])
             navigate_to('login')
@@ -350,6 +416,8 @@ def show_main_page():
     st.subheader("📊 Upload your Excel file")
     st.markdown("<p>Select the Excel file containing the data you want to update.</p>", unsafe_allow_html=True)
     excel_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"], key="excel_uploader")
+    if excel_file:
+        logger.info(f"Excel file uploaded: {excel_file.name}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     # File uploader for PDF files - ENHANCED VERSION
@@ -357,6 +425,10 @@ def show_main_page():
     st.subheader("📄 Upload your PDF files")
     st.markdown("<p>Select the PDF files you want to process and extract data from.</p>", unsafe_allow_html=True)
     pdf_files = st.file_uploader("Upload PDF files", type=["pdf"], accept_multiple_files=True, key="pdf_uploader")
+    if pdf_files:
+        logger.info(f"PDF files uploaded: {len(pdf_files)} files")
+        for pdf in pdf_files:
+            logger.debug(f"PDF file: {pdf.name}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Process button - ENHANCED VERSION
@@ -368,6 +440,7 @@ def show_main_page():
     if st.button("🚀 Process Files", disabled=process_disabled, key="process_button"):
         if excel_file and pdf_files:
             log_user_activity("PROCESSING_STARTED", f"Processing {len(pdf_files)} PDF files")
+            logger.info(f"Starting to process {len(pdf_files)} PDF files with Excel file: {excel_file.name}")
 
             with st.spinner("Processing files..."):
                 try:
@@ -375,17 +448,21 @@ def show_main_page():
                     temp_dir = tempfile.mkdtemp()
                     pdf_folder = os.path.join(temp_dir, "pdfs")
                     os.makedirs(pdf_folder, exist_ok=True)
+                    logger.debug(f"Created temporary directories: {temp_dir}, {pdf_folder}")
 
                     # Save Excel file to temp directory
                     excel_path = os.path.join(temp_dir, excel_file.name)
                     with open(excel_path, "wb") as f:
                         f.write(excel_file.getvalue())
+                    logger.info(f"Saved Excel file to: {excel_path}")
 
                     # Save PDF files to temp directory
                     for pdf in pdf_files:
                         pdf_path = os.path.join(pdf_folder, pdf.name)
                         with open(pdf_path, "wb") as f:
                             f.write(pdf.getvalue())
+                        logger.debug(f"Saved PDF file: {pdf_path}")
+                    logger.info(f"Saved {len(pdf_files)} PDF files to: {pdf_folder}")
 
                     # Set up progress bar and status
                     progress_bar = st.progress(0)
@@ -393,18 +470,29 @@ def show_main_page():
 
                     # Define callback functions for progress updates
                     def update_progress(current, total):
-                        progress_bar.progress(current / total)
+                        progress = current / total
+                        progress_bar.progress(progress)
+                        logger.debug(f"Progress update: {current}/{total} ({progress:.2%})")
 
                     def update_status(message):
                         status_area.text(message)
+                        logger.info(f"Status update: {message}")
 
                     # Process the files
-                    results = process_files(excel_path, pdf_folder,
-                                            progress_callback=update_progress,
-                                            status_callback=update_status)
+                    try:
+                        logger.info("Calling process_files function")
+                        results = process_files(excel_path, pdf_folder,
+                                                progress_callback=update_progress,
+                                                status_callback=update_status)
+                        logger.info(f"Processing completed successfully: {results}")
+                    except Exception as e:
+                        error_msg = f"Error in process_files: {str(e)}"
+                        logger.error(error_msg, exc_info=True)
+                        raise RuntimeError(error_msg)
 
                     # Show results
                     st.success("Processing complete!")
+                    logger.info("Processing complete!")
 
                     # Enhanced results display
                     st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -433,6 +521,7 @@ def show_main_page():
                         with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
                             # Add the updated Excel file
                             zip_file.write(excel_path, os.path.basename(excel_path))
+                            logger.debug(f"Added Excel file to ZIP: {os.path.basename(excel_path)}")
 
                             # Add processed PDFs
                             if os.path.exists(processed_dir):
@@ -441,11 +530,13 @@ def show_main_page():
                                     for file in processed_files:
                                         file_path = os.path.join(processed_dir, file)
                                         zip_file.write(file_path, os.path.join("Processed PDF", file))
+                                        logger.debug(f"Added processed PDF to ZIP: {file}")
                                 else:
                                     # Create an empty directory marker
                                     zip_info = zipfile.ZipInfo(os.path.join("Processed PDF", "/"))
                                     zip_info.external_attr = 0o755 << 16  # permissions
                                     zip_file.writestr(zip_info, "")
+                                    logger.debug("Created empty processed PDF directory in ZIP")
 
                             # Add unprocessed PDFs
                             if os.path.exists(unprocessed_dir):
@@ -455,11 +546,13 @@ def show_main_page():
                                     for file in unprocessed_files:
                                         file_path = os.path.join(unprocessed_dir, file)
                                         zip_file.write(file_path, os.path.join("Unprocessed PDF", file))
+                                        logger.debug(f"Added unprocessed PDF to ZIP: {file}")
                                 else:
                                     # Create an empty directory marker
                                     zip_info = zipfile.ZipInfo(os.path.join("Unprocessed PDF", "/"))
                                     zip_info.external_attr = 0o755 << 16  # permissions
                                     zip_file.writestr(zip_info, "")
+                                    logger.debug("Created empty unprocessed PDF directory in ZIP")
 
                         # Offer download of the zip file - ENHANCED VERSION
                         zip_buffer.seek(0)
@@ -474,13 +567,17 @@ def show_main_page():
                             file_name="pdf_processing_results.zip",
                             mime="application/zip"
                         )
+                        logger.info("Created ZIP file for download with processing results")
                         st.markdown("</div>", unsafe_allow_html=True)
 
                     # Clean up temporary directory
                     shutil.rmtree(temp_dir)
+                    logger.debug(f"Cleaned up temporary directory: {temp_dir}")
 
                 except Exception as e:
-                    st.error(f"An error occurred during processing: {str(e)}")
+                    error_msg = f"An error occurred during processing: {str(e)}"
+                    st.error(error_msg)
+                    logger.error(error_msg, exc_info=True)
                     import traceback
                     st.exception(traceback.format_exc())
                     log_user_activity("PROCESSING_ERROR", f"Error: {str(e)}")
@@ -492,9 +589,22 @@ def show_change_password_page():
     with st.sidebar:
         st.markdown(f"**Logged in as:** {st.session_state.user_data['username']}")
 
+        # Add log viewing capability
+        st.write(f"Logs are being written to: {log_file}")
+        # Optional: Add a button to view logs
+        if st.button("View Recent Logs"):
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.readlines()[-50:]  # Show last 50 lines
+                    st.code(''.join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Couldn't read log file: {str(e)}")
+                logger.error(f"Error reading log file: {str(e)}")
+
         # Navigation
         st.markdown("### Navigation")
         if st.button("PDF Processing"):
+            logger.info("User navigating to PDF processing")
             st.session_state.current_page = 'main'
             st.rerun()
 
@@ -502,11 +612,13 @@ def show_change_password_page():
         if st.session_state.user_data.get('is_admin'):
             st.markdown("### Administration")
             if st.button("User Management"):
+                logger.info("Admin navigating to user management")
                 st.session_state.current_page = 'admin'
                 st.rerun()
 
         # Logout
         if st.button("Logout"):
+            logger.info(f"User logging out: {st.session_state.user_data['username']}")
             if st.session_state.user_data and 'session_token' in st.session_state.user_data:
                 user_manager.logout_user(st.session_state.user_data['session_token'])
             navigate_to('login')
@@ -527,9 +639,12 @@ def show_change_password_page():
             submit_button = st.form_submit_button("Change Password")
 
             if submit_button:
+                logger.info(f"Password change attempt for user: {st.session_state.user_data['username']}")
                 if not all([current_password, new_password, confirm_password]):
+                    logger.warning("Password change attempt with missing fields")
                     st.error("Please fill in all fields")
                 elif new_password != confirm_password:
+                    logger.warning("Password change attempt with mismatched passwords")
                     st.error("New passwords do not match")
                 else:
                     success, message = user_manager.change_password(
@@ -539,15 +654,18 @@ def show_change_password_page():
                     )
 
                     if success:
+                        logger.info(f"Password changed successfully for user: {st.session_state.user_data['username']}")
                         st.success("Password changed successfully!")
                         log_user_activity("PASSWORD_CHANGED", "User changed their password")
                     else:
+                        logger.warning(f"Password change failed: {message}")
                         st.error(f"Failed to change password: {message}")
 
 
 def show_admin_page():
     """Display the admin page."""
     if not st.session_state.user_data.get('is_admin', False):
+        logger.warning(f"Non-admin user attempting to access admin page: {st.session_state.user_data['username']}")
         st.error("Access denied. Admin privileges required.")
         st.button("Back to Main", on_click=lambda: navigate_to('main'))
         return
@@ -556,20 +674,35 @@ def show_admin_page():
     with st.sidebar:
         st.markdown(f"**Logged in as:** {st.session_state.user_data['username']} (Admin)")
 
+        # Add log viewing capability
+        st.write(f"Logs are being written to: {log_file}")
+        # Optional: Add a button to view logs
+        if st.button("View Recent Logs"):
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.readlines()[-50:]  # Show last 50 lines
+                    st.code(''.join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Couldn't read log file: {str(e)}")
+                logger.error(f"Error reading log file: {str(e)}")
+
         # Navigation
         st.markdown("### Navigation")
         if st.button("PDF Processing"):
+            logger.info("Admin navigating to PDF processing")
             st.session_state.current_page = 'main'
             st.rerun()
 
         # Account
         st.markdown("### Account")
         if st.button("Change Password"):
+            logger.info("Admin navigating to change password")
             st.session_state.current_page = 'change_password'
             st.rerun()
 
         # Logout
         if st.button("Logout"):
+            logger.info(f"Admin logging out: {st.session_state.user_data['username']}")
             if st.session_state.user_data and 'session_token' in st.session_state.user_data:
                 user_manager.logout_user(st.session_state.user_data['session_token'])
             navigate_to('login')
@@ -604,58 +737,73 @@ def show_admin_page():
 def show_user_management():
     """Display the user management section."""
     st.subheader("User Management")
+    logger.info("Admin viewing user management page")
 
     # Get user list
-    success, users = user_manager.get_user_list(st.session_state.user_data['id'])
+    try:
+        success, users = user_manager.get_user_list(st.session_state.user_data['id'])
 
-    if not success:
-        st.error(f"Failed to get user list: {users}")
-        return
+        if not success:
+            logger.error(f"Failed to get user list: {users}")
+            st.error(f"Failed to get user list: {users}")
+            return
 
-    # Convert users to DataFrame for display
-    user_df = pd.DataFrame(users)
+        # Convert users to DataFrame for display
+        user_df = pd.DataFrame(users)
 
-    # Add action buttons
-    st.dataframe(user_df[['id', 'username', 'email', 'full_name', 'is_admin', 'is_active', 'last_login']])
+        # Add action buttons
+        st.dataframe(user_df[['id', 'username', 'email', 'full_name', 'is_admin', 'is_active', 'last_login']])
+        logger.debug(f"Displaying {len(users)} users in management table")
 
-    # User status management
-    st.subheader("Change User Status")
+        # User status management
+        st.subheader("Change User Status")
 
-    col1, col2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
-    with col1:
-        user_id = st.selectbox("Select User", options=[user['id'] for user in users],
-                               format_func=lambda x: next((u['username'] for u in users if u['id'] == x), ""))
+        with col1:
+            user_id = st.selectbox("Select User", options=[user['id'] for user in users],
+                                   format_func=lambda x: next((u['username'] for u in users if u['id'] == x), ""))
 
-    with col2:
-        selected_user = next((u for u in users if u['id'] == user_id), None)
-        current_status = "Active" if selected_user and selected_user['is_active'] else "Inactive"
-        st.write(f"Current Status: {current_status}")
+        with col2:
+            selected_user = next((u for u in users if u['id'] == user_id), None)
+            current_status = "Active" if selected_user and selected_user['is_active'] else "Inactive"
+            st.write(f"Current Status: {current_status}")
 
-        action = "Deactivate" if selected_user and selected_user['is_active'] else "Activate"
-        if st.button(action, key=f"status_{user_id}"):
-            if selected_user:
-                # Prevent deactivating self
-                if user_id == st.session_state.user_data['id'] and action == "Deactivate":
-                    st.error("You cannot deactivate your own account")
-                else:
-                    success, message = user_manager.update_user_status(
-                        st.session_state.user_data['id'],
-                        user_id,
-                        not selected_user['is_active']
-                    )
-
-                    if success:
-                        st.success(message)
-                        log_user_activity("USER_STATUS_CHANGED", f"Changed status for user {user_id}")
-                        st.rerun()
+            action = "Deactivate" if selected_user and selected_user['is_active'] else "Activate"
+            if st.button(action, key=f"status_{user_id}"):
+                if selected_user:
+                    logger.info(
+                        f"Admin attempting to {action.lower()} user: {selected_user['username']} (ID: {user_id})")
+                    # Prevent deactivating self
+                    if user_id == st.session_state.user_data['id'] and action == "Deactivate":
+                        logger.warning("Admin attempted to deactivate their own account")
+                        st.error("You cannot deactivate your own account")
                     else:
-                        st.error(f"Failed to update user status: {message}")
+                        success, message = user_manager.update_user_status(
+                            st.session_state.user_data['id'],
+                            user_id,
+                            not selected_user['is_active']
+                        )
+
+                        if success:
+                            logger.info(
+                                f"Successfully {action.lower()}d user: {selected_user['username']} (ID: {user_id})")
+                            st.success(message)
+                            log_user_activity("USER_STATUS_CHANGED", f"Changed status for user {user_id}")
+                            st.rerun()
+                        else:
+                            logger.error(f"Failed to {action.lower()} user: {message}")
+                            st.error(f"Failed to update user status: {message}")
+    except Exception as e:
+        error_msg = f"Error in user management: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        st.error(error_msg)
 
 
 def show_activity_log():
     """Display the activity log section."""
     st.subheader("Activity Log")
+    logger.info("Admin viewing activity log")
 
     # Here you would add code to retrieve and display the activity log
     # from your database, perhaps with filtering options
@@ -666,6 +814,9 @@ def show_activity_log():
 # Main app function
 def main():
     """Main application entry point."""
+    # Ensure logging available in global scope
+    import logging
+
     # Handle page navigation
     if st.session_state.current_page == 'login':
         show_login_page()
@@ -675,18 +826,22 @@ def main():
         if st.session_state.authenticated:
             show_main_page()
         else:
+            logger.warning("Unauthenticated user attempted to access main page")
             navigate_to('login')
     elif st.session_state.current_page == 'change_password':
         if st.session_state.authenticated:
             show_change_password_page()
         else:
+            logger.warning("Unauthenticated user attempted to access change password page")
             navigate_to('login')
     elif st.session_state.current_page == 'admin':
         if st.session_state.authenticated and st.session_state.user_data.get('is_admin'):
             show_admin_page()
         else:
+            logger.warning("Unauthorized user attempted to access admin page")
             navigate_to('login')
     else:
+        logger.warning(f"Unknown page requested: {st.session_state.current_page}")
         navigate_to('login')
 
 
