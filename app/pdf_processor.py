@@ -105,6 +105,23 @@ class PDFProcessor:
             'ClaimNo', 'Claim_Ref_No', 'CLAIM_REF_NO', 'Invoice Details'
         ]
 
+    def load_ml_model(self):
+        model_path = 'models/pdf_extractor_model.joblib'
+
+        if os.path.exists(model_path):
+            try:
+                self.ml_model = joblib.load(model_path)
+                logger.info("ML model loaded successfully")
+                return True
+            except Exception as e:
+                logger.warning(f"Could not load ML model: {str(e)}")
+                self.ml_model = None
+                return False
+        else:
+            logger.info("ML model file not found. Using rule-based extraction only.")
+            self.ml_model = None
+            return False
+
     def extract_text(self, pdf_path):
         """
         Extract text from PDF using the unified PDF text extractor.

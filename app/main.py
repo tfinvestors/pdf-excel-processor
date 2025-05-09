@@ -87,9 +87,28 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
     }
 
     # Create output directories in user's Downloads folder
-    download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-    processed_dir = os.path.join(download_dir, "Processed PDF")
-    unprocessed_dir = os.path.join(download_dir, "Unprocessed PDF")
+    # Get platform-neutral output directories
+    processed_dir, unprocessed_dir = get_output_dirs()  # Add this function
+
+    # Define the function if it doesn't exist
+    def get_output_dirs():
+        if 'STREAMLIT_SHARING' in os.environ:
+            # In cloud environment, use directories in the app folder
+            processed_dir = os.path.join('processed_pdf')
+            unprocessed_dir = os.path.join('unprocessed_pdf')
+        else:
+            # In local environment, use Downloads directories
+            processed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Processed PDF")
+            unprocessed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Unprocessed PDF")
+
+        # Ensure directories exist
+        os.makedirs(processed_dir, exist_ok=True)
+        os.makedirs(unprocessed_dir, exist_ok=True)
+
+        return processed_dir, unprocessed_dir
+
+    # Call the function to get the directories
+    processed_dir, unprocessed_dir = get_output_dirs()
 
     # Create debug directory if debug mode is enabled
     debug_dir = None
