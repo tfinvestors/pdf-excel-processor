@@ -8,6 +8,43 @@ import io
 import zipfile
 import datetime
 import json
+import platform
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+# Initialize platform-specific paths and create necessary directories
+os.makedirs('data', exist_ok=True)
+os.makedirs('models', exist_ok=True)
+
+# Set Tesseract and Poppler paths based on platform
+if platform.system() == 'Windows':
+    os.environ['TESSERACT_PATH'] = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    os.environ['POPPLER_PATH'] = r'C:\poppler-24.08.0\Library\bin'
+else:
+    # On Streamlit Cloud, these are available through packages.txt
+    os.environ['TESSERACT_PATH'] = '/usr/bin/tesseract'
+    os.environ['POPPLER_PATH'] = ''  # Empty means use system path
+
+
+# Define platform-neutral output directories
+def get_output_dirs():
+    if 'STREAMLIT_SHARING' in os.environ:
+        # In cloud environment, use directories in the app folder
+        processed_dir = os.path.join('processed_pdf')
+        unprocessed_dir = os.path.join('unprocessed_pdf')
+    else:
+        # In local environment, use Downloads directories
+        processed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Processed PDF")
+        unprocessed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Unprocessed PDF")
+
+    # Ensure directories exist
+    os.makedirs(processed_dir, exist_ok=True)
+    os.makedirs(unprocessed_dir, exist_ok=True)
+
+    return processed_dir, unprocessed_dir
+
 
 # Import your processing modules
 from app.pdf_processor import PDFProcessor
@@ -15,8 +52,10 @@ from app.excel_handler import ExcelHandler
 from app.main import process_files
 from app.auth.user_manager import UserManager
 
-# Initialize user manager
-user_manager = UserManager()
+# Initialize user manager with appropriate DB path
+db_path = 'data/users.db'
+os.makedirs(os.path.dirname(db_path), exist_ok=True)
+user_manager = UserManager(db_path=db_path)
 
 # Set page config
 st.set_page_config(
@@ -36,7 +75,6 @@ if 'current_page' not in st.session_state:
 if 'admin_tab' not in st.session_state:
     st.session_state.admin_tab = 'users'
 
-# Custom CSS
 # Custom CSS
 st.markdown("""
     <style>
@@ -255,12 +293,16 @@ def show_register_page():
 
 
 # Application pages
-# In your main processing page
 def show_main_page():
     """Display the main application page."""
+    # Get environment-specific output directories
+    processed_dir, unprocessed_dir = get_output_dirs()
+
     # Sidebar
     with st.sidebar:
-        st.image("https://www.computerworld.com/wp-content/uploads/2024/03/cw-pdf-to-excel-100928235-orig.jpg?quality=50&strip=all", width=100)  # Replace with your logo or remove this line
+        st.image(
+            "https://www.computerworld.com/wp-content/uploads/2024/03/cw-pdf-to-excel-100928235-orig.jpg?quality=50&strip=all",
+            width=100)
         st.markdown(f"**👤 Logged in as:** {st.session_state.user_data['username']}")
 
         # Navigation
@@ -287,6 +329,13 @@ def show_main_page():
                 user_manager.logout_user(st.session_state.user_data['session_token'])
             navigate_to('login')
             st.rerun()
+
+        # Environment info (only shown to admins)
+        if st.session_state.user_data.get('is_admin'):
+            st.markdown("### ⚙️ Environment")
+            env_type = "Cloud" if 'STREAMLIT_SHARING' in os.environ else "Local"
+            st.info(f"Running in: {env_type}")
+            st.info(f"Output folders:\n- {processed_dir}\n- {unprocessed_dir}")
 
     # Main content
     st.markdown("<h1 class='main-header'>PDF Processing & Excel Update Tool</h1>", unsafe_allow_html=True)
@@ -320,115 +369,120 @@ def show_main_page():
             log_user_activity("PROCESSING_STARTED", f"Processing {len(pdf_files)} PDF files")
 
             with st.spinner("Processing files..."):
-                # Create temporary directories
-                temp_dir = tempfile.mkdtemp()
-                pdf_folder = os.path.join(temp_dir, "pdfs")
-                os.makedirs(pdf_folder, exist_ok=True)
+                try:
+                    # Create temporary directories
+                    temp_dir = tempfile.mkdtemp()
+                    pdf_folder = os.path.join(temp_dir, "pdfs")
+                    os.makedirs(pdf_folder, exist_ok=True)
 
-                # Save Excel file to temp directory
-                excel_path = os.path.join(temp_dir, excel_file.name)
-                with open(excel_path, "wb") as f:
-                    f.write(excel_file.getvalue())
+                    # Save Excel file to temp directory
+                    excel_path = os.path.join(temp_dir, excel_file.name)
+                    with open(excel_path, "wb") as f:
+                        f.write(excel_file.getvalue())
 
-                # Save PDF files to temp directory
-                for pdf in pdf_files:
-                    pdf_path = os.path.join(pdf_folder, pdf.name)
-                    with open(pdf_path, "wb") as f:
-                        f.write(pdf.getvalue())
+                    # Save PDF files to temp directory
+                    for pdf in pdf_files:
+                        pdf_path = os.path.join(pdf_folder, pdf.name)
+                        with open(pdf_path, "wb") as f:
+                            f.write(pdf.getvalue())
 
-                # Set up progress bar and status
-                progress_bar = st.progress(0)
-                status_area = st.empty()
+                    # Set up progress bar and status
+                    progress_bar = st.progress(0)
+                    status_area = st.empty()
 
-                # Define callback functions for progress updates
-                def update_progress(current, total):
-                    progress_bar.progress(current / total)
+                    # Define callback functions for progress updates
+                    def update_progress(current, total):
+                        progress_bar.progress(current / total)
 
-                def update_status(message):
-                    status_area.text(message)
+                    def update_status(message):
+                        status_area.text(message)
 
-                # Process the files
-                results = process_files(excel_path, pdf_folder,
-                                        progress_callback=update_progress,
-                                        status_callback=update_status)
+                    # Process the files
+                    results = process_files(excel_path, pdf_folder,
+                                            progress_callback=update_progress,
+                                            status_callback=update_status)
 
-                # Show results
-                st.success("Processing complete!")
+                    # Show results
+                    st.success("Processing complete!")
 
-                # Enhanced results display
-                st.markdown("<div class='card'>", unsafe_allow_html=True)
-                st.subheader("📊 Processing Results")
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total PDFs", results['total'])
-                with col2:
-                    st.metric("Successfully Processed", results['processed'],
-                              delta=f"{results['processed'] / results['total'] * 100:.1f}%" if results[
-                                                                                                   'total'] > 0 else None)
-                with col3:
-                    st.metric("Failed to Process", results['unprocessed'])
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                # Log the processing results
-                log_user_activity(
-                    "PROCESSING_COMPLETED",
-                    f"Processed: {results['processed']}, Unprocessed: {results['unprocessed']}"
-                )
-
-                # Create a zip file with the results
-                with io.BytesIO() as zip_buffer:
-                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                        # Add the updated Excel file
-                        zip_file.write(excel_path, os.path.basename(excel_path))
-
-                        # Add processed PDFs
-                        processed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Processed PDF")
-                        if os.path.exists(processed_dir):
-                            processed_files = [f for f in os.listdir(processed_dir) if f.lower().endswith('.pdf')]
-                            if processed_files:
-                                for file in processed_files:
-                                    file_path = os.path.join(processed_dir, file)
-                                    zip_file.write(file_path, os.path.join("Processed PDF", file))
-                            else:
-                                # Create an empty directory marker
-                                zip_info = zipfile.ZipInfo(os.path.join("Processed PDF", "/"))
-                                zip_info.external_attr = 0o755 << 16  # permissions
-                                zip_file.writestr(zip_info, "")
-
-                        # Add unprocessed PDFs
-                        unprocessed_dir = os.path.join(os.path.expanduser("~"), "Downloads", "Unprocessed PDF")
-                        if os.path.exists(unprocessed_dir):
-                            unprocessed_files = [f for f in os.listdir(unprocessed_dir) if f.lower().endswith('.pdf')]
-                            if unprocessed_files:
-                                for file in unprocessed_files:
-                                    file_path = os.path.join(unprocessed_dir, file)
-                                    zip_file.write(file_path, os.path.join("Unprocessed PDF", file))
-                            else:
-                                # Create an empty directory marker
-                                zip_info = zipfile.ZipInfo(os.path.join("Unprocessed PDF", "/"))
-                                zip_info.external_attr = 0o755 << 16  # permissions
-                                zip_file.writestr(zip_info, "")
-
-
-                    # Offer download of the zip file - ENHANCED VERSION
-                    zip_buffer.seek(0)
+                    # Enhanced results display
                     st.markdown("<div class='card'>", unsafe_allow_html=True)
-                    st.subheader("📦 Download Results")
-                    st.markdown(
-                        "<p>Download a zip file containing the updated Excel file and processed/unprocessed PDFs.</p>",
-                        unsafe_allow_html=True)
-                    st.download_button(
-                        label="📥 Download Results",
-                        data=zip_buffer,
-                        file_name="pdf_processing_results.zip",
-                        mime="application/zip"
-                    )
+                    st.subheader("📊 Processing Results")
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total PDFs", results['total'])
+                    with col2:
+                        st.metric("Successfully Processed", results['processed'],
+                                  delta=f"{results['processed'] / results['total'] * 100:.1f}%" if results[
+                                                                                                       'total'] > 0 else None)
+                    with col3:
+                        st.metric("Failed to Process", results['unprocessed'])
+
                     st.markdown("</div>", unsafe_allow_html=True)
 
-                # Clean up temporary directory
-                shutil.rmtree(temp_dir)
+                    # Log the processing results
+                    log_user_activity(
+                        "PROCESSING_COMPLETED",
+                        f"Processed: {results['processed']}, Unprocessed: {results['unprocessed']}"
+                    )
+
+                    # Create a zip file with the results
+                    with io.BytesIO() as zip_buffer:
+                        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                            # Add the updated Excel file
+                            zip_file.write(excel_path, os.path.basename(excel_path))
+
+                            # Add processed PDFs
+                            if os.path.exists(processed_dir):
+                                processed_files = [f for f in os.listdir(processed_dir) if f.lower().endswith('.pdf')]
+                                if processed_files:
+                                    for file in processed_files:
+                                        file_path = os.path.join(processed_dir, file)
+                                        zip_file.write(file_path, os.path.join("Processed PDF", file))
+                                else:
+                                    # Create an empty directory marker
+                                    zip_info = zipfile.ZipInfo(os.path.join("Processed PDF", "/"))
+                                    zip_info.external_attr = 0o755 << 16  # permissions
+                                    zip_file.writestr(zip_info, "")
+
+                            # Add unprocessed PDFs
+                            if os.path.exists(unprocessed_dir):
+                                unprocessed_files = [f for f in os.listdir(unprocessed_dir) if
+                                                     f.lower().endswith('.pdf')]
+                                if unprocessed_files:
+                                    for file in unprocessed_files:
+                                        file_path = os.path.join(unprocessed_dir, file)
+                                        zip_file.write(file_path, os.path.join("Unprocessed PDF", file))
+                                else:
+                                    # Create an empty directory marker
+                                    zip_info = zipfile.ZipInfo(os.path.join("Unprocessed PDF", "/"))
+                                    zip_info.external_attr = 0o755 << 16  # permissions
+                                    zip_file.writestr(zip_info, "")
+
+                        # Offer download of the zip file - ENHANCED VERSION
+                        zip_buffer.seek(0)
+                        st.markdown("<div class='card'>", unsafe_allow_html=True)
+                        st.subheader("📦 Download Results")
+                        st.markdown(
+                            "<p>Download a zip file containing the updated Excel file and processed/unprocessed PDFs.</p>",
+                            unsafe_allow_html=True)
+                        st.download_button(
+                            label="📥 Download Results",
+                            data=zip_buffer,
+                            file_name="pdf_processing_results.zip",
+                            mime="application/zip"
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    # Clean up temporary directory
+                    shutil.rmtree(temp_dir)
+
+                except Exception as e:
+                    st.error(f"An error occurred during processing: {str(e)}")
+                    import traceback
+                    st.exception(traceback.format_exc())
+                    log_user_activity("PROCESSING_ERROR", f"Error: {str(e)}")
 
 
 def show_change_password_page():
@@ -519,6 +573,16 @@ def show_admin_page():
                 user_manager.logout_user(st.session_state.user_data['session_token'])
             navigate_to('login')
             st.rerun()
+
+        # Database info for admins
+        st.markdown("### Database Info")
+        db_path = 'data/users.db'
+        st.info(f"Database path: {os.path.abspath(db_path)}")
+
+        # Environment info
+        st.markdown("### Environment")
+        env_type = "Cloud" if 'STREAMLIT_SHARING' in os.environ else "Local"
+        st.info(f"Running in: {env_type}")
 
     # Main content
     st.markdown("<h1 class='main-header'>Administration</h1>", unsafe_allow_html=True)

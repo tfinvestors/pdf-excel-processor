@@ -265,6 +265,9 @@ class PDFProcessor:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 document_date = match.group(1).strip()
+                date_parts = document_date.split('.')
+                if len(date_parts) == 3:
+                    document_date = f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}"
                 logger.info(f"Extracted document date: {document_date}")
                 break
 

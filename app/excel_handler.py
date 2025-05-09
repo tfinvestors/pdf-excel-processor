@@ -799,8 +799,8 @@ class ExcelHandler:
                 results['unprocessed'] += 1
                 continue
 
-            if 'receipt_date' in row_data and row_data['receipt_date'] and row_data['receipt_date'] != global_data[
-                'receipt_date']:
+            if ('receipt_date' in row_data and row_data['receipt_date'] and
+                    'receipt_date' in global_data and row_data['receipt_date'] != global_data['receipt_date']):
                 logger.info(
                     f"Using table-specific receipt date: {row_data['receipt_date']} instead of global: {global_data.get('receipt_date')}")
 

@@ -219,7 +219,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
                             status_callback(f"📋 Found {len(table_data)} claim entries in table")
 
                         # Process the table data
-                        table_results = excel_handler.process_multi_row_data(table_data, extracted_text)
+                        table_results = excel_handler.process_multi_row_data(table_data, extracted_text, {})
 
                         if table_results['processed'] > 0:
                             if status_callback:

@@ -80,6 +80,9 @@ class PDFTextExtractor:
         # Set Tesseract path for Windows
         if os.name == 'nt':  # Windows
             pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+        elif 'STREAMLIT_SHARING' in os.environ:
+            # We're on Streamlit Cloud
+            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
         # Create debug directory if needed
         if self.debug_mode:
