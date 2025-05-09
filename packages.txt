@@ -1,3 +1,6 @@
 tesseract-ocr
 tesseract-ocr-eng
 poppler-utils
+python3-opencv
+libgl1-mesa-glx
+libglib2.0-0
