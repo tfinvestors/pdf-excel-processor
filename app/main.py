@@ -54,6 +54,12 @@ def move_to_appropriate_folder(pdf_path, success, processed_dir, unprocessed_dir
 
 # Create output directories in user's Downloads folder
 def get_output_dirs():
+    """
+    Returns the output directories for processed and unprocessed PDFs.
+
+    Returns:
+        tuple: (processed_dir, unprocessed_dir) paths
+    """
     if 'STREAMLIT_SHARING' in os.environ:
         # In cloud environment, use directories in the app folder
         processed_dir = os.path.join('processed_pdf')
