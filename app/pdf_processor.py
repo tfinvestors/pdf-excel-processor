@@ -1197,12 +1197,12 @@ class PDFProcessor:
             # Extract claim/policy number
             claim_patterns = [
                 # Look specifically for claim number in the table format
+                r'CLAIM NUMBER.*?(\d{17}|\d{14})',
+                r'claim\s+number.*?(\d{14,})',
+                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
                 r'CLAIM NUMBER\s+AMOUNT.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
                 r'CLAIM NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
                 r'(?:POLICY|CLAIM) NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
-                # Then fallback patterns - less reliable
-                r'claim\s+number.*?(\d{14,})',
-                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
             ]
 
             for pattern in claim_patterns:
@@ -2869,6 +2869,8 @@ class PDFProcessor:
 
             # Try different patterns to match the table rows
             patterns = [
+                r'(51000\w+)\s+(\d{20})\s+(\d{20})\s+([\d,\.]+)',
+                r'(\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)',
                 r'(5\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)',  # Standard format
                 r'(5\d+CN\d+).*?(\d{20}).*?(\d{20}).*?([\d,\.]+)',  # Less strict spacing
                 r'(5\d+CN\d+).*?(\d{11}).*?(\d{17}).*?([\d,\.]+)'  # For your specific doc
@@ -2876,28 +2878,22 @@ class PDFProcessor:
 
             rows = []
             for pattern in patterns:
-                found_rows = re.findall(pattern, table_section)
-                if found_rows:
-                    rows = found_rows
-                    logger.info(f"Found {len(rows)} rows using pattern: {pattern}")
+                rows = re.findall(pattern, table_section)
+                if rows:
+                    for row in rows:
+                        invoice_no, policy_no, claim_no, amount = row
+
+                        # Only add rows with positive amounts
+                        clean_amount = amount.replace(',', '')
+                        if float(clean_amount) > 0:
+                            table_data.append({
+                                'unique_id': claim_no,  # Use claim number
+                                'invoice_no': invoice_no,
+                                'policy_no': policy_no,
+                                'receipt_amount': clean_amount
+                            })
+                            logger.info(f"Added New India claim {claim_no} with amount {clean_amount}")
                     break
-
-            for row in rows:
-                try:
-                    invoice_no, policy_no, claim_no, amount = row
-
-                    # Only add rows with a positive amount (filter out TDS lines)
-                    clean_amount = amount.replace(',', '')
-                    if float(clean_amount) > 0:
-                        table_data.append({
-                            'unique_id': claim_no,
-                            'invoice_no': invoice_no,
-                            'policy_no': policy_no,
-                            'receipt_amount': clean_amount
-                        })
-                        logger.info(f"Added New India claim {claim_no} with amount {clean_amount}")
-                except Exception as e:
-                    logger.error(f"Error processing table row: {e}")
 
             # If no rows were found with the patterns, try a more direct approach
             if not rows:
