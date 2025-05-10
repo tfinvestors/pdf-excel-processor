@@ -10,14 +10,33 @@ import io
 import zipfile
 import datetime
 import json
+import sys
+from io import StringIO
 import platform
 from dotenv import load_dotenv
 from logging_utils import setup_logging
 
-# Setup logging at the start of your app
-logger, log_file = setup_logging("streamlit_pdf_app")
-logger.info("Streamlit application started")
-logger.info("TEST LOG - Application started")
+
+class StreamlitLogger:
+    def __init__(self):
+        self.log_capture = StringIO()
+
+    def setup(self):
+        # Create a custom handler that captures logs
+        handler = logging.StreamHandler(self.log_capture)
+        handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+
+        # Add handler to the root logger
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+
+    def get_logs(self, last_n_lines=50):
+        # Get the captured logs
+        self.log_capture.seek(0)
+        lines = self.log_capture.readlines()
+        return lines[-last_n_lines:] if lines else []
 
 # THIS MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(
@@ -26,6 +45,18 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize at the start of your app
+if 'streamlit_logger' not in st.session_state:
+    st.session_state.streamlit_logger = StreamlitLogger()
+    st.session_state.streamlit_logger.setup()
+
+# Setup logging at the start of your app
+logger, log_file = setup_logging("streamlit_pdf_app")
+logger.info("Streamlit application started")
+logger.info("TEST LOG - Application started")
+
+
 
 st.write("Direct test log message written")
 
@@ -211,6 +242,11 @@ def show_login_page():
         # Optional: Add a button to view logs
         # Replace the existing log viewing button code in the sidebar
         if st.button("View Recent Logs"):
+            logs = st.session_state.streamlit_logger.get_logs()
+            if logs:
+                st.code(''.join(logs), language="text")
+            else:
+                st.info("No logs captured in this session")
             try:
                 log_path = log_file
                 st.write(f"Attempting to read log file: {log_path}")
