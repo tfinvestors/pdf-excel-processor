@@ -1194,26 +1194,40 @@ class PDFProcessor:
             # New India Assurance format
             logger.debug("Extracting data using New India Assurance patterns")
 
-            # Extract claim/policy number
-            claim_patterns = [
-                # Look specifically for claim number in the table format
-                r'CLAIM NUMBER.*?(\d{17}|\d{14})',
-                r'claim\s+number.*?(\d{14,})',
-                r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                r'CLAIM NUMBER\s+AMOUNT.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
-                r'CLAIM NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
-                r'(?:POLICY|CLAIM) NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
-            ]
+            # Check for table format with headers
+            if "INVOICE NUMBER POLICY NUMBER CLAIM NUMBER AMOUNT" in text:
+                # This is a structured table - extract from correct column
+                table_start = text.find("INVOICE NUMBER")
+                table_end = text.find("TOTAL:", table_start)
 
-            for pattern in claim_patterns:
-                claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                if claim_match:
-                    if '(' in pattern:
+                if table_start >= 0 and table_end >= 0:
+                    table_content = text[table_start:table_end]
+                    # Parse the table row: invoice, policy, claim, amount
+                    row_pattern = r'(\S+)\s+(\d{20})\s+(\d{20})\s+([\d,\.]+)'
+                    row_match = re.search(row_pattern, table_content)
+
+                    if row_match:
+                        # Extract claim number (3rd column)
+                        data['unique_id'] = row_match.group(3).strip()
+                        logger.debug(f"Extracted New India claim number from table: {data['unique_id']}")
+
+                        # Extract amount (4th column)
+                        data['receipt_amount'] = row_match.group(4).strip().replace(',', '')
+                        logger.debug(f"Extracted amount from table: {data['receipt_amount']}")
+            else:
+                # Fallback to original patterns for non-table documents
+                claim_patterns = [
+                    r'claim\s+number.*?(\d{14,})',
+                    r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
+                    r'CLAIM NUMBER.*?\n.*?(?:\d+)\s+(\d+)\s+[\d,\.]+',
+                ]
+
+                for pattern in claim_patterns:
+                    claim_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                    if claim_match:
                         data['unique_id'] = claim_match.group(1).strip()
-                    else:
-                        data['unique_id'] = claim_match.group(0).strip()
-                    logger.debug(f"Extracted New India Assurance claim number: {data['unique_id']}")
-                    break
+                        logger.debug(f"Extracted New India claim number: {data['unique_id']}")
+                        break
 
             # Extract amount
             amount_patterns = [
@@ -1896,31 +1910,15 @@ class PDFProcessor:
             logger.info("New India Assurance payment advice format detected - direct extraction")
 
             # Direct pattern to extract the claim number from the table
-            claim_match = re.search(r'5\d+CN\d+\s+\d+\s+(\d+)\s+[\d,\.]+', text)
-            if claim_match:
-                unique_id = claim_match.group(1)
+            table_pattern = r'(\S+)\s+(\d{20})\s+(\d{20})\s+([\d,\.]+)'
+            table_match = re.search(table_pattern, text[text.find("INVOICE NUMBER"):])
+
+            if table_match:
+                unique_id = table_match.group(3)  # Claim number is in the 3rd column
                 logger.info(f"Directly extracted claim number: {unique_id}")
 
-                # Extract amount from TOTAL line
-                amount_match = re.search(r'TOTAL:\s*([\d,\.]+)', text)
-                if amount_match:
-                    data_points['receipt_amount'] = amount_match.group(1).replace(',', '')
-
-                # Extract date dynamically from the text
-                date_match = re.search(r'Date\s*:\s*(\w+\s+\w+\s+\d+\s+[\d:]+\s+\w+\s+\d{4})', text)
-                if date_match:
-                    # Convert the date format
-                    try:
-                        date_text = date_match.group(1)
-                        date_parts = date_text.split()
-                        if len(date_parts) >= 6:
-                            day = date_parts[2]
-                            month = date_parts[1][:3]  # First 3 chars of month
-                            year = date_parts[5]
-                            data_points['receipt_date'] = f"{day}-{month}-{year}"
-                            logger.info(f"Extracted date: {data_points['receipt_date']}")
-                    except Exception as e:
-                        logger.error(f"Error parsing date: {e}")
+                # Extract amount from the same row
+                data_points['receipt_amount'] = table_match.group(4).replace(',', '')
 
                 # Set detected provider
                 detected_provider = "new_india"
