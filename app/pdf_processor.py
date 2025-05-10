@@ -3093,33 +3093,31 @@ class PDFProcessor:
         return table_data
 
     def process_pdf(self, pdf_path, expected_fields=None):
-        """
-        Process a single PDF and extract relevant data.
-
-        Args:
-            pdf_path (str): Path to the PDF file
-            expected_fields (list): List of expected field names
-
-        Returns:
-            tuple: (unique_id, data_points_dict, table_data)
-        """
+        """Process a single PDF with enhanced error handling."""
         if not os.path.exists(pdf_path):
             logger.error(f"File not found: {pdf_path}")
             return None, {}, []
 
-        # Extract text from PDF
-        extracted_text = self.extract_text(pdf_path)
+        try:
+            # Extract text from PDF
+            extracted_text = self.extract_text(pdf_path)
 
-        if not extracted_text:
-            logger.warning(f"No text extracted from {pdf_path}")
+            if not extracted_text:
+                logger.warning(f"No text extracted from {pdf_path}")
+                # Try alternative extraction methods
+                extracted_text = self.text_extractor._fallback_ocr_extraction(pdf_path)
+
+                if not extracted_text:
+                    logger.error(f"All extraction methods failed for {pdf_path}")
+                    return None, {}, []
+
+            # Extract data points
+            unique_id, data_points, table_data, detected_provider = self.extract_data_points(
+                extracted_text, expected_fields
+            )
+
+            return unique_id, data_points, table_data
+
+        except Exception as e:
+            logger.error(f"Error processing PDF {pdf_path}: {str(e)}")
             return None, {}, []
-
-        # Extract unique ID, data points, and table data
-        unique_id, data_points, table_data = self.extract_data_points(extracted_text, expected_fields)
-
-        # Log the extracted data
-        logger.info(f"Extracted data from {pdf_path}: ID={unique_id}, Fields={len(data_points)}")
-        if table_data:
-            logger.info(f"Found {len(table_data)} table rows")
-
-        return unique_id, data_points, table_data

@@ -41,6 +41,7 @@ except ImportError:
 
     HAS_OPENCV = False
     logger.warning("OpenCV (cv2) import failed. Some image processing features will be limited.")
+
 import time
 import json
 import traceback
@@ -162,13 +163,27 @@ class PDFTextExtractor:
         return table_pattern_count >= 3
 
     def extract_tables_with_camelot(self, pdf_path, page_num):
-        """Extract tables using camelot for structured tables."""
+        """Extract tables using camelot with better error handling."""
         try:
-            tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1))
+            # Check if camelot is available
+            import camelot
+
+            tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='stream')
+            if tables.n == 0:
+                # Try lattice flavor
+                tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='lattice')
+
             if tables.n > 0:
-                return "\n".join([table.df.to_string() for table in tables])
+                table_texts = []
+                for table in tables:
+                    table_texts.append(table.df.to_string())
+                return "\n\n".join(table_texts)
+
+        except ImportError:
+            logger.warning("Camelot not available. Table extraction skipped.")
         except Exception as e:
             logger.warning(f"Camelot failed on page {page_num + 1}: {e}")
+
         return None
 
     def _extract_via_api(self, pdf_path=None, pdf_content=None):
@@ -518,7 +533,7 @@ class PDFTextExtractor:
             preprocessed_img = self._preprocess_image_enhanced(images[0])
 
             # Apply OCR with custom config
-            custom_config = r'--oem 3 --psm 1 -l eng --dpi 300 -c preserve_interword_spaces=1'
+            custom_config = r'--oem 3 --psm 1 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
             text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
 
             # Apply OCR cleaning
@@ -531,91 +546,125 @@ class PDFTextExtractor:
 
     def _preprocess_image_enhanced(self, img):
         """Enhanced image preprocessing for better OCR results."""
-        # Convert to grayscale
-        img = img.convert('L')
+        try:
+            # Convert to grayscale
+            img = img.convert('L')
 
-        # Apply contrast enhancement
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)
+            # Resize if image is too large
+            max_size = 2000
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = tuple(int(dim * ratio) for dim in img.size)
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-        # Convert to numpy array for OpenCV operations if available
-        if HAS_OPENCV:
-            img_np = np.array(img)
+            # Apply basic enhancements
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.5)
 
-            # Apply denoising
-            img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(1.5)
 
-            # Apply adaptive thresholding
-            img_np = cv2.adaptiveThreshold(
-                img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 11, 2
-            )
+            # Convert to numpy array for OpenCV operations if available
+            if HAS_OPENCV:
+                img_np = np.array(img)
 
-            # Convert back to PIL Image
-            img = Image.fromarray(img_np)
+                # Apply denoising
+                img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
 
-        return img
+                # Apply adaptive thresholding
+                img_np = cv2.adaptiveThreshold(
+                    img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY, 11, 2
+                )
+
+                # Convert back to PIL Image
+                img = Image.fromarray(img_np)
+
+            return img
+
+        except Exception as e:
+            logger.error(f"Error in image preprocessing: {e}")
+            return img  # Return original image if preprocessing fails
 
     def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file"):
-        """Enhanced text extraction with multi-method approach."""
-
-        # Initialize components
-        from app.utils.text_post_processor import TextPostProcessor
-        post_processor = TextPostProcessor()
+        """Enhanced text extraction with better error recovery."""
 
         all_text = []
 
         try:
             # Open PDF based on source type
             if source_type == "file":
+                if not os.path.exists(pdf_path):
+                    logger.error(f"PDF file not found: {pdf_path}")
+                    return ""
                 doc = fitz.open(pdf_path)
             else:
                 doc = fitz.open(stream=pdf_content, filetype="pdf")
 
-            # Process each page
+            # Process each page with error recovery
             for page_num in range(len(doc)):
-                page = doc[page_num]
+                try:
+                    page = doc[page_num]
+                    page_text = ""
 
-                # Determine extraction method
-                text = page.get_text("text")
-                word_count = len(text.split())
+                    # Try native extraction first
+                    try:
+                        text = page.get_text("text")
+                        word_count = len(text.split())
 
-                if word_count < 5:
-                    # OCR only
-                    page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
-                elif word_count < 20:
-                    # Hybrid approach
-                    text_native = text
-                    text_ocr = self._extract_text_ocr_from_page(pdf_path, page_num)
-                    page_text = self.combine_extraction_results(text_native, text_ocr)
-                else:
-                    # Native extraction with table detection
-                    page_text = text
+                        if word_count < 5:
+                            # OCR only
+                            page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
+                        elif word_count < 20:
+                            # Hybrid approach
+                            text_native = text
+                            text_ocr = self._extract_text_ocr_from_page(pdf_path, page_num)
+                            page_text = self.combine_extraction_results(text_native, text_ocr)
+                        else:
+                            # Native extraction
+                            page_text = text
+                    except Exception as e:
+                        logger.warning(f"Native extraction failed for page {page_num}: {e}")
+                        # Fallback to OCR
+                        page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
 
-                    # Check for tables
-                    if self.has_table_structure(page_text):
-                        table_data = self.extract_tables_with_camelot(pdf_path, page_num)
-                        if table_data:
-                            page_text += "\n\n[TABLE DATA]\n" + table_data
+                    # Try table extraction if enabled
+                    if page_text and self.has_table_structure(page_text):
+                        try:
+                            table_data = self.extract_tables_with_camelot(pdf_path, page_num)
+                            if table_data:
+                                page_text += "\n\n[TABLE DATA]\n" + table_data
+                        except Exception as e:
+                            logger.warning(f"Table extraction failed for page {page_num}: {e}")
 
-                all_text.append(page_text)
+                    all_text.append(page_text)
+
+                except Exception as e:
+                    logger.error(f"Error processing page {page_num}: {e}")
+                    # Continue with next page instead of failing completely
+                    all_text.append("")
 
             # Combine all pages
             combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
 
-            # Apply post-processing
-            processed_text = post_processor.process(combined_text)
-
-            # Clean the text further
-            final_text = self.clean_text(processed_text)
+            # Apply post-processing only if we have text
+            if combined_text:
+                try:
+                    processed_text = self._post_process_text(combined_text)
+                    final_text = self.clean_text(processed_text)
+                except Exception as e:
+                    logger.error(f"Post-processing failed: {e}")
+                    final_text = combined_text
+            else:
+                final_text = ""
 
             doc.close()
-
             return final_text
 
         except Exception as e:
-            logger.error(f"Error in enhanced text extraction: {str(e)}")
-            return ""
+            logger.error(f"Error in text extraction: {str(e)}")
+            # Last resort: try OCR on all pages
+            return self._fallback_ocr_extraction(pdf_path, pdf_content)
 
     def combine_extraction_results(self, text_native, text_ocr):
         """Intelligently combine results from native extraction and OCR."""
@@ -697,6 +746,34 @@ class PDFTextExtractor:
         processed_text = post_processor.process(text)
 
         return processed_text
+
+    def _fallback_ocr_extraction(self, pdf_path=None, pdf_content=None):
+        """Fallback OCR extraction when other methods fail."""
+        try:
+            logger.info("Using fallback OCR extraction")
+
+            if pdf_path:
+                images = convert_from_path(pdf_path, dpi=300, poppler_path=self.poppler_path)
+            else:
+                images = convert_from_bytes(pdf_content, dpi=300)
+
+            texts = []
+            for i, img in enumerate(images):
+                try:
+                    # Preprocess image
+                    processed_img = self._preprocess_image_enhanced(img)
+                    # Extract text
+                    text = pytesseract.image_to_string(processed_img)
+                    texts.append(text)
+                except Exception as e:
+                    logger.error(f"Fallback OCR failed for page {i}: {e}")
+                    texts.append("")
+
+            return "\n\n".join(texts)
+
+        except Exception as e:
+            logger.error(f"Fallback OCR extraction failed: {e}")
+            return ""
 
     def _process_images_with_ocr(self, images):
         """
