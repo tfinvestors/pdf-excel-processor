@@ -13,6 +13,7 @@ import json
 import platform
 from dotenv import load_dotenv
 from logging_utils import setup_logging
+from app.pdf_processor import check_ocr_tools
 
 # Setup logging at the start of your app
 logger, log_file = setup_logging("streamlit_pdf_app")
@@ -45,6 +46,13 @@ else:
     os.environ['TESSERACT_PATH'] = '/usr/bin/tesseract'
     os.environ['POPPLER_PATH'] = ''  # Empty means use system path
 
+logger.info("Checking OCR tools availability...")
+try:
+    check_ocr_tools()
+    st.sidebar.success("OCR tools check completed")
+except Exception as e:
+    logger.error(f"OCR tools check failed: {str(e)}", exc_info=True)
+    st.sidebar.error("OCR tools check failed - see logs for details")
 
 # Define platform-neutral output directories
 def get_output_dirs():

@@ -27,6 +27,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pdf_processor")
 
+def check_ocr_tools():
+    """Verify OCR tools are properly installed and configured"""
+    import subprocess
+    import shutil
+
+    logger.info("Checking OCR tools setup...")
+
+    # Check Tesseract
+    tesseract_path = os.environ.get('TESSERACT_PATH', 'tesseract')
+    try:
+        # Try to get version info
+        version = subprocess.check_output([tesseract_path, '--version'],
+                                          stderr=subprocess.STDOUT,
+                                          timeout=5).decode('utf-8')
+        logger.info(f"Tesseract version: {version.splitlines()[0] if version else 'Unknown'}")
+    except Exception as e:
+        logger.error(f"Tesseract not properly configured: {str(e)}")
+        # Fall back to system path
+        tesseract_in_path = shutil.which('tesseract')
+        if tesseract_in_path:
+            logger.info(f"Found Tesseract in system path: {tesseract_in_path}")
+            os.environ['TESSERACT_PATH'] = tesseract_in_path
+        else:
+            logger.warning("Tesseract not found in system path!")
+
+    # Check Poppler
+    try:
+        # Try to run pdfinfo (part of poppler)
+        version = subprocess.check_output(['pdfinfo', '-v'],
+                                          stderr=subprocess.STDOUT,
+                                          timeout=5).decode('utf-8')
+        logger.info(f"Poppler version: {version.splitlines()[0] if version else 'Unknown'}")
+    except Exception as e:
+        logger.error(f"Poppler not properly configured: {str(e)}")
+
+    logger.info("OCR tools check completed")
 
 class PDFProcessor:
     def __init__(self, use_ml=True, debug_mode=False, poppler_path=None, text_extraction_api_url=None):
