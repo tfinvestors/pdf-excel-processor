@@ -95,8 +95,7 @@ def process_files(excel_path, pdf_folder, progress_callback=None, status_callbac
     pdf_processor = PDFProcessor(
         use_ml=Config.USE_ML_MODEL,
         debug_mode=Config.DEBUG_MODE,
-        poppler_path=Config.POPPLER_PATH,
-        text_extraction_api_url=Config.PDF_EXTRACTION_API_URL
+        poppler_path=Config.POPPLER_PATH
     )
 
     results = {
