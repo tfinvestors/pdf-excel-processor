@@ -9,10 +9,18 @@ load_dotenv()
 
 class Config:
     # PDF Text Extraction API Configuration
-    PDF_EXTRACTION_API_URL = os.environ.get(
-        'PDF_EXTRACTION_API_URL',
-        'http://localhost:8000/api/v1/documents/upload'
-    )
+    if 'STREAMLIT_SHARING' in os.environ:
+        # For Streamlit Cloud, use a public API endpoint or disable API extraction
+        PDF_EXTRACTION_API_URL = os.environ.get(
+            'PDF_EXTRACTION_API_URL',
+            None  # Set to None to force local extraction in cloud
+        )
+    else:
+        # For local development
+        PDF_EXTRACTION_API_URL = os.environ.get(
+            'PDF_EXTRACTION_API_URL',
+            'http://localhost:8000/api/v1/documents/upload'
+        )
 
     # Fallback and Debugging Options
     DEBUG_MODE = os.environ.get('DEBUG_MODE', 'False').lower() == 'true'
