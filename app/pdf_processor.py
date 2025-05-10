@@ -2860,59 +2860,35 @@ class PDFProcessor:
         if "INVOICE NUMBER POLICY NUMBER CLAIM NUMBER AMOUNT" in text:
             logger.info("Detected New India Assurance table format")
 
-            # Extract the table section (this is more reliable with simpler boundaries)
+            # Extract the table section
             table_start = text.find("INVOICE NUMBER")
             table_end = text.find("TOTAL:", table_start)
+
             if table_start >= 0 and table_end >= 0:
                 table_section = text[table_start:table_end]
-                logger.info(f"Found table section length: {len(table_section)}")
 
-            # Try different patterns to match the table rows
-            patterns = [
-                r'(51000\w+)\s+(\d{20})\s+(\d{20})\s+([\d,\.]+)',
-                r'(\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)',
-                r'(5\d+CN\d+)\s+(\d+)\s+(\d+)\s+([\d,\.]+)',  # Standard format
-                r'(5\d+CN\d+).*?(\d{20}).*?(\d{20}).*?([\d,\.]+)',  # Less strict spacing
-                r'(5\d+CN\d+).*?(\d{11}).*?(\d{17}).*?([\d,\.]+)'  # For your specific doc
-            ]
+                # Pattern to match table rows: invoice policy claim amount
+                table_row_pattern = r'(51\d+\w+)\s+(\d{20})\s+(\d{20})\s+([\d,\.]+)'
+                rows = re.findall(table_row_pattern, table_section)
 
-            rows = []
-            for pattern in patterns:
-                rows = re.findall(pattern, table_section)
-                if rows:
-                    for row in rows:
-                        invoice_no, policy_no, claim_no, amount = row
+                for row in rows:
+                    invoice_no, policy_no, claim_no, amount = row
 
-                        # Only add rows with positive amounts
-                        clean_amount = amount.replace(',', '')
-                        if float(clean_amount) > 0:
+                    # Clean and validate amount
+                    clean_amount = amount.replace(',', '')
+                    try:
+                        amount_val = float(clean_amount)
+                        if amount_val > 0:  # Only positive amounts
                             table_data.append({
-                                'unique_id': claim_no,  # Use claim number
+                                'unique_id': claim_no,  # Use claim number (3rd column)
                                 'invoice_no': invoice_no,
                                 'policy_no': policy_no,
                                 'receipt_amount': clean_amount
                             })
                             logger.info(f"Added New India claim {claim_no} with amount {clean_amount}")
-                    break
-
-            # If no rows were found with the patterns, try a more direct approach
-            if not rows:
-                logger.info("Trying alternative approach for New India table")
-
-                # Look for the claim number in a more targeted way
-                claim_no_match = re.search(r'CLAIM NUMBER.*?(\d{17}|\d{14})', text, re.DOTALL)
-                if claim_no_match:
-                    claim_no = claim_no_match.group(1)
-
-                    # Look for associated amount
-                    amount_match = re.search(r'(\d{1,3}(?:,\d{3})*\.\d{2})', table_section)
-                    amount = amount_match.group(1).replace(',', '') if amount_match else "0.00"
-
-                    table_data.append({
-                        'unique_id': claim_no,
-                        'receipt_amount': amount
-                    })
-                    logger.info(f"Added claim {claim_no} with direct extraction approach")
+                    except ValueError:
+                        logger.warning(f"Invalid amount format: {amount}")
+                        continue
 
         # 10. Check for RG Cargo table format (specific to your document)
         if "Invoice No. Invoice Date F.Y. Client" in text and "RG Cargo Services Private Limited" in text:
