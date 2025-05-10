@@ -12,6 +12,9 @@ import io
 import requests
 import concurrent.futures
 from PIL import Image, ImageEnhance
+import signal
+from contextlib import contextmanager
+import platform
 
 try:
     import cv2
@@ -49,6 +52,28 @@ import traceback
 # Configure logging
 logger = logging.getLogger("pdf_extractor")
 
+
+@contextmanager
+def timeout(seconds):
+    """Context manager for timing out operations."""
+    # Only works on Unix-based systems (not Windows)
+    if platform.system() == 'Windows':
+        yield
+        return
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {seconds} seconds")
+
+    # Set the timeout handler
+    original_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(seconds)
+
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original_handler)
+
 # OCR Corrections Dictionary
 OCR_CORRECTIONS = {
     "0rienta1": "Oriental",
@@ -85,7 +110,6 @@ OCR_CORRECTIONS = {
     "a55e550r5": "assessors",
     "0C": "OC"
 }
-
 
 class PDFTextExtractor:
     """
@@ -137,178 +161,7 @@ class PDFTextExtractor:
             os.makedirs(self.debug_dir, exist_ok=True)
             logger.info(f"Debug mode enabled. Outputs will be saved to {self.debug_dir}")
 
-    def has_table_structure(self, page_text):
-        """Detect if a page contains table-like structures."""
-        lines = page_text.split('\n')
-
-        if len(lines) < 3:
-            return False
-
-        # Count lines with consistent spacing patterns
-        table_pattern_count = 0
-        space_pattern = []
-
-        for line in lines:
-            spaces = [match.start() for match in re.finditer(r'\s{2,}', line)]
-            if len(spaces) >= 2:
-                if not space_pattern:
-                    space_pattern = spaces
-                    table_pattern_count += 1
-                else:
-                    # Check if spacing pattern is similar
-                    matches = sum(1 for pos in spaces if any(abs(pos - p) <= 3 for p in space_pattern))
-                    if matches >= len(spaces) * 0.5:
-                        table_pattern_count += 1
-
-        return table_pattern_count >= 3
-
-    def extract_tables_with_camelot(self, pdf_path, page_num):
-        """Extract tables using camelot with better error handling."""
-        try:
-            # Check if camelot is available
-            import camelot
-
-            tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='stream')
-            if tables.n == 0:
-                # Try lattice flavor
-                tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='lattice')
-
-            if tables.n > 0:
-                table_texts = []
-                for table in tables:
-                    table_texts.append(table.df.to_string())
-                return "\n\n".join(table_texts)
-
-        except ImportError:
-            logger.warning("Camelot not available. Table extraction skipped.")
-        except Exception as e:
-            logger.warning(f"Camelot failed on page {page_num + 1}: {e}")
-
-        return None
-
-    def _extract_via_api(self, pdf_path=None, pdf_content=None):
-        """
-        Extract text using external API service with comprehensive error handling.
-        """
-        logger.info(f"Attempting API extraction")
-        base_url = 'http://localhost:8000/api/v1'
-
-        try:
-            # Upload file
-            upload_url = f'{base_url}/documents/upload'
-
-            # Prepare files and data
-            if pdf_path:
-                if not os.path.exists(pdf_path):
-                    logger.error(f"PDF file not found: {pdf_path}")
-                    return ""
-
-                # Read file content instead of keeping file open
-                with open(pdf_path, 'rb') as f:
-                    file_content = f.read()
-
-                files = {'file': (os.path.basename(pdf_path), file_content, 'application/pdf')}
-                data = {
-                    'process_immediately': 'true',
-                    'process_directly': 'true'
-                }
-            elif pdf_content:
-                files = {'file': ('document.pdf', pdf_content, 'application/pdf')}
-                data = {
-                    'process_immediately': 'true',
-                    'process_directly': 'true'
-                }
-            else:
-                logger.error("No PDF source provided for API extraction")
-                return ""
-
-            # Attempt API extraction with explicit error handling
-            try:
-                upload_response = requests.post(
-                    upload_url,
-                    files=files,
-                    data=data,
-                    timeout=10
-                )
-            except (requests.ConnectionError, requests.Timeout) as conn_error:
-                logger.error(f"API Connection Error: {conn_error}")
-                logger.warning("Falling back to local extraction due to API unavailability")
-                return ""
-            except Exception as e:
-                logger.error(f"Unexpected error during API upload: {e}")
-                return ""
-
-            # Check upload response
-            if upload_response.status_code != 200:
-                logger.error(f"API upload failed. Status code: {upload_response.status_code}")
-                logger.error(f"Response content: {upload_response.text}")
-                return ""
-
-            # Parse upload response
-            try:
-                upload_result = upload_response.json()
-                document_id = upload_result.get('document_id')
-            except ValueError:
-                logger.error("Failed to parse API response")
-                return ""
-
-            if not document_id:
-                logger.error("No document ID received")
-                return ""
-
-            # Status and text retrieval with error handling
-            try:
-                # Check status
-                status_url = f'{base_url}/extract/{document_id}/status'
-
-                # Wait and poll for completion
-                max_attempts = 20 if 'STREAMLIT_SHARING' in os.environ else 10
-                initial_wait = 5 if 'STREAMLIT_SHARING' in os.environ else 3
-
-                for attempt in range(max_attempts):
-                    try:
-                        status_response = requests.get(status_url, timeout=10)
-                        status_data = status_response.json()
-
-                        logger.info(f"Status Check (Attempt {attempt + 1}): {status_data}")
-
-                        # Check if processing is complete
-                        if status_data.get('status') == 'completed':
-                            # Retrieve text
-                            text_url = f'{base_url}/documents/{document_id}/consolidated-text'
-                            text_response = requests.get(text_url, timeout=10)
-
-                            text_result = text_response.json()
-                            extracted_text = text_result.get('consolidated_text', '')
-
-                            logger.info(f"API Extraction Successful. Text Length: {len(extracted_text)}")
-                            return extracted_text
-
-                        # If not completed, wait and retry
-                        elif status_data.get('status') in ['queued', 'processing', 'pending']:
-                            logger.info("Document still processing. Waiting...")
-                            wait_time = initial_wait if attempt < 3 else min(initial_wait * 1.5, 10)
-                            time.sleep(wait_time)  # Increased wait time
-                        else:
-                            logger.warning(f"Unexpected status: {status_data.get('status')}")
-                            break
-
-                    except requests.RequestException as status_error:
-                        logger.error(f"Error checking status: {status_error}")
-                        # Wait before retrying
-                        time.sleep(wait_time)
-
-                logger.warning("Maximum attempts reached. Processing may have failed.")
-                return ""
-
-            except Exception as e:
-                logger.error(f"Error during status/text retrieval: {e}")
-                return ""
-
-        except Exception as e:
-            logger.error(f"Unexpected error during API extraction: {e}")
-            return ""
-
+    # 1. Public methods first
     def extract_from_file(self, pdf_path):
         """
         Extract text from a local PDF file with API-first approach.
@@ -513,83 +366,17 @@ class PDFTextExtractor:
             logger.error(f"Error extracting text from PDF bytes: {str(e)}")
             return ""
 
+    def _cleanup_memory(self):
+        """Force garbage collection to free memory."""
+        import gc
+        gc.collect()
 
-    def _extract_text_ocr_from_page(self, pdf_path, page_num):
-        """Extract text from a single page using OCR with enhanced processing."""
-        try:
-            # Convert to high DPI for better OCR
-            images = convert_from_path(
-                pdf_path,
-                first_page=page_num + 1,
-                last_page=page_num + 1,
-                dpi=300,
-                poppler_path=self.poppler_path
-            )
-
-            if not images:
-                return ""
-
-            # Preprocess image
-            preprocessed_img = self._preprocess_image_enhanced(images[0])
-
-            # Apply OCR with custom config
-            custom_config = r'--oem 3 --psm 1 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
-            text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
-
-            # Apply OCR cleaning
-            cleaned_text = self._clean_ocr_text_enhanced(text)
-
-            return cleaned_text
-        except Exception as e:
-            logger.error(f"OCR failed for page {page_num + 1}: {str(e)}")
-            return ""
-
-    def _preprocess_image_enhanced(self, img):
-        """Enhanced image preprocessing for better OCR results."""
-        try:
-            # Convert to grayscale
-            img = img.convert('L')
-
-            # Resize if image is too large
-            max_size = 2000
-            if max(img.size) > max_size:
-                ratio = max_size / max(img.size)
-                new_size = tuple(int(dim * ratio) for dim in img.size)
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-            # Apply basic enhancements
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(1.5)
-
-            enhancer = ImageEnhance.Sharpness(img)
-            img = enhancer.enhance(1.5)
-
-            # Convert to numpy array for OpenCV operations if available
-            if HAS_OPENCV:
-                img_np = np.array(img)
-
-                # Apply denoising
-                img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
-
-                # Apply adaptive thresholding
-                img_np = cv2.adaptiveThreshold(
-                    img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY, 11, 2
-                )
-
-                # Convert back to PIL Image
-                img = Image.fromarray(img_np)
-
-            return img
-
-        except Exception as e:
-            logger.error(f"Error in image preprocessing: {e}")
-            return img  # Return original image if preprocessing fails
-
-    def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file"):
-        """Enhanced text extraction with better error recovery."""
+    # 2. Main internal extraction method
+    def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file", progress_callback=None):
+        """Enhanced text extraction with better error recovery and progress tracking."""
 
         all_text = []
+        doc = None  # Initialize doc variable
 
         try:
             # Open PDF based on source type
@@ -644,6 +431,11 @@ class PDFTextExtractor:
                     # Continue with next page instead of failing completely
                     all_text.append("")
 
+                # Report progress
+                if progress_callback:
+                    progress = (page_num + 1) / len(doc) * 100
+                    progress_callback(progress)
+
             # Combine all pages
             combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
 
@@ -666,6 +458,86 @@ class PDFTextExtractor:
             # Last resort: try OCR on all pages
             return self._fallback_ocr_extraction(pdf_path, pdf_content)
 
+        finally:
+            # Clean up resources
+            if doc:
+                doc.close()
+            # Clean up memory
+            self._cleanup_memory()
+
+    # 3. Specific extraction methods
+    def _extract_text_ocr_from_page(self, pdf_path, page_num):
+        """Extract text from a single page using OCR with timeout protection."""
+        try:
+            # Add timeout protection
+            with timeout(30):  # 30 seconds timeout per page
+                logger.info(f"Converting page {page_num + 1} to image for OCR")
+
+                # Convert to high DPI for better OCR
+                images = convert_from_path(
+                    pdf_path,
+                    first_page=page_num + 1,
+                    last_page=page_num + 1,
+                    dpi=300,
+                    poppler_path=self.poppler_path
+                )
+
+                if not images:
+                    return ""
+
+                # Preprocess image
+                preprocessed_img = self._preprocess_image_enhanced(images[0])
+
+                # Apply OCR with custom config
+                custom_config = r'--oem 3 --psm 1 -l eng --dpi 300 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/., -c language_model_penalty_non_dict_word=0.5 -c tessedit_do_invert=0'
+                text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
+
+                # Apply OCR cleaning
+                cleaned_text = self._clean_ocr_text_enhanced(text)
+
+                return cleaned_text
+
+        except TimeoutError:
+            logger.error(f"OCR timeout for page {page_num + 1}")
+            return ""
+        except Exception as e:
+            logger.error(f"OCR failed for page {page_num + 1}: {str(e)}")
+            return ""
+
+    def _fallback_ocr_extraction(self, pdf_path=None, pdf_content=None):
+        """Fallback OCR extraction when other methods fail."""
+        try:
+            logger.info("Using fallback OCR extraction")
+
+            if pdf_path:
+                images = convert_from_path(pdf_path, dpi=300, poppler_path=self.poppler_path)
+            else:
+                images = convert_from_bytes(pdf_content, dpi=300)
+
+            texts = []
+            for i, img in enumerate(images):
+                try:
+                    # Add timeout for each page
+                    with timeout(30):
+                        # Preprocess image
+                        processed_img = self._preprocess_image_enhanced(img)
+                        # Extract text
+                        text = pytesseract.image_to_string(processed_img)
+                        texts.append(text)
+                except TimeoutError:
+                    logger.error(f"Fallback OCR timeout for page {i}")
+                    texts.append("")
+                except Exception as e:
+                    logger.error(f"Fallback OCR failed for page {i}: {e}")
+                    texts.append("")
+
+            return "\n\n".join(texts)
+
+        except Exception as e:
+            logger.error(f"Fallback OCR extraction failed: {e}")
+            return ""
+
+    # 4. Helper methods
     def combine_extraction_results(self, text_native, text_ocr):
         """Intelligently combine results from native extraction and OCR."""
         # If one is empty, return the other
@@ -679,6 +551,266 @@ class PDFTextExtractor:
             return text_ocr
 
         return text_native
+
+    def has_table_structure(self, page_text):
+        """Detect if a page contains table-like structures."""
+        lines = page_text.split('\n')
+
+        if len(lines) < 3:
+            return False
+
+        # Count lines with consistent spacing patterns
+        table_pattern_count = 0
+        space_pattern = []
+
+        for line in lines:
+            spaces = [match.start() for match in re.finditer(r'\s{2,}', line)]
+            if len(spaces) >= 2:
+                if not space_pattern:
+                    space_pattern = spaces
+                    table_pattern_count += 1
+                else:
+                    # Check if spacing pattern is similar
+                    matches = sum(1 for pos in spaces if any(abs(pos - p) <= 3 for p in space_pattern))
+                    if matches >= len(spaces) * 0.5:
+                        table_pattern_count += 1
+
+        return table_pattern_count >= 3
+
+    def extract_tables_with_camelot(self, pdf_path, page_num):
+        """Extract tables using camelot with timeout protection."""
+        try:
+            with timeout(20):  # 20 seconds timeout for table extraction
+                # Check if camelot is available
+                import camelot
+
+                tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='stream')
+                if tables.n == 0:
+                    # Try lattice flavor
+                    tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='lattice')
+
+                if tables.n > 0:
+                    table_texts = []
+                    for table in tables:
+                        table_texts.append(table.df.to_string())
+                    return "\n\n".join(table_texts)
+
+        except TimeoutError:
+            logger.warning(f"Table extraction timeout for page {page_num + 1}")
+        except ImportError:
+            logger.warning("Camelot not available. Table extraction skipped.")
+        except Exception as e:
+            logger.warning(f"Camelot failed on page {page_num + 1}: {e}")
+
+        return None
+
+    # 5. Processing methods
+    def _preprocess_image_enhanced(self, img):
+        """Enhanced image preprocessing for better OCR results."""
+        try:
+            # Convert to grayscale
+            img = img.convert('L')
+
+            # Resize if image is too large
+            max_size = 2000
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = tuple(int(dim * ratio) for dim in img.size)
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Apply basic enhancements
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.5)
+
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(1.5)
+
+            # Convert to numpy array for OpenCV operations if available
+            if HAS_OPENCV:
+                img_np = np.array(img)
+
+                # Apply denoising
+                img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
+
+                # Apply adaptive thresholding
+                img_np = cv2.adaptiveThreshold(
+                    img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY, 11, 2
+                )
+
+                # Convert back to PIL Image
+                img = Image.fromarray(img_np)
+
+            return img
+
+        except Exception as e:
+            logger.error(f"Error in image preprocessing: {e}")
+            return img  # Return original image if preprocessing fails
+
+    def _post_process_text(self, text):
+        """Apply post-processing to improve text quality."""
+        from app.utils.text_post_processor import TextPostProcessor
+
+        post_processor = TextPostProcessor()
+
+        # Apply all post-processing steps
+        processed_text = post_processor.process(text)
+
+        return processed_text
+
+    def clean_text(self, text):
+        """
+        Clean and standardize extracted text with improved line handling.
+
+        Args:
+            text (str): Extracted text
+
+        Returns:
+            str: Cleaned text
+        """
+        if not text:
+            return ""
+
+        # EMERGENCY FIX: Directly join Bajaj claim numbers that got split across lines
+        text = re.sub(r'(OC-\d+-\d+-\d+)[\s\n]+(\d+)', r'\1-\2', text)
+
+        # Join broken lines in claim numbers - critical for Bajaj Allianz documents
+        text = re.sub(r'(OC-\d+-\d+-\d+)[ \t]*\n[ \t]*(\d+)', r'\1-\2', text)
+
+        # Remove excessive whitespace (but preserve newlines for some processing)
+        text = re.sub(r'[ \t]+', ' ', text)
+
+        # Remove non-printable characters
+        text = ''.join(c for c in text if c.isprintable() or c in ['\n', '\t'])
+
+        # Apply OCR corrections for common misrecognitions
+        for error, correction in OCR_CORRECTIONS.items():
+            text = text.replace(error, correction)
+
+        return text.strip()
+
+    def _extract_via_api(self, pdf_path=None, pdf_content=None):
+        """
+        Extract text using external API service with comprehensive error handling.
+        """
+        logger.info(f"Attempting API extraction")
+        base_url = 'http://localhost:8000/api/v1'
+
+        try:
+            # Upload file
+            upload_url = f'{base_url}/documents/upload'
+
+            # Prepare files and data
+            if pdf_path:
+                if not os.path.exists(pdf_path):
+                    logger.error(f"PDF file not found: {pdf_path}")
+                    return ""
+
+                # Read file content instead of keeping file open
+                with open(pdf_path, 'rb') as f:
+                    file_content = f.read()
+
+                files = {'file': (os.path.basename(pdf_path), file_content, 'application/pdf')}
+                data = {
+                    'process_immediately': 'true',
+                    'process_directly': 'true'
+                }
+            elif pdf_content:
+                files = {'file': ('document.pdf', pdf_content, 'application/pdf')}
+                data = {
+                    'process_immediately': 'true',
+                    'process_directly': 'true'
+                }
+            else:
+                logger.error("No PDF source provided for API extraction")
+                return ""
+
+            # Attempt API extraction with explicit error handling
+            try:
+                upload_response = requests.post(
+                    upload_url,
+                    files=files,
+                    data=data,
+                    timeout=10
+                )
+            except (requests.ConnectionError, requests.Timeout) as conn_error:
+                logger.error(f"API Connection Error: {conn_error}")
+                logger.warning("Falling back to local extraction due to API unavailability")
+                return ""
+            except Exception as e:
+                logger.error(f"Unexpected error during API upload: {e}")
+                return ""
+
+            # Check upload response
+            if upload_response.status_code != 200:
+                logger.error(f"API upload failed. Status code: {upload_response.status_code}")
+                logger.error(f"Response content: {upload_response.text}")
+                return ""
+
+            # Parse upload response
+            try:
+                upload_result = upload_response.json()
+                document_id = upload_result.get('document_id')
+            except ValueError:
+                logger.error("Failed to parse API response")
+                return ""
+
+            if not document_id:
+                logger.error("No document ID received")
+                return ""
+
+            # Status and text retrieval with error handling
+            try:
+                # Check status
+                status_url = f'{base_url}/extract/{document_id}/status'
+
+                # Wait and poll for completion
+                max_attempts = 20 if 'STREAMLIT_SHARING' in os.environ else 10
+                initial_wait = 5 if 'STREAMLIT_SHARING' in os.environ else 3
+
+                for attempt in range(max_attempts):
+                    try:
+                        status_response = requests.get(status_url, timeout=10)
+                        status_data = status_response.json()
+
+                        logger.info(f"Status Check (Attempt {attempt + 1}): {status_data}")
+
+                        # Check if processing is complete
+                        if status_data.get('status') == 'completed':
+                            # Retrieve text
+                            text_url = f'{base_url}/documents/{document_id}/consolidated-text'
+                            text_response = requests.get(text_url, timeout=10)
+
+                            text_result = text_response.json()
+                            extracted_text = text_result.get('consolidated_text', '')
+
+                            logger.info(f"API Extraction Successful. Text Length: {len(extracted_text)}")
+                            return extracted_text
+
+                        # If not completed, wait and retry
+                        elif status_data.get('status') in ['queued', 'processing', 'pending']:
+                            logger.info("Document still processing. Waiting...")
+                            wait_time = initial_wait if attempt < 3 else min(initial_wait * 1.5, 10)
+                            time.sleep(wait_time)  # Increased wait time
+                        else:
+                            logger.warning(f"Unexpected status: {status_data.get('status')}")
+                            break
+
+                    except requests.RequestException as status_error:
+                        logger.error(f"Error checking status: {status_error}")
+                        # Wait before retrying
+                        time.sleep(wait_time)
+
+                logger.warning("Maximum attempts reached. Processing may have failed.")
+                return ""
+
+            except Exception as e:
+                logger.error(f"Error during status/text retrieval: {e}")
+                return ""
+
+        except Exception as e:
+            logger.error(f"Unexpected error during API extraction: {e}")
+            return ""
 
     def _extract_text_ocr_from_file(self, pdf_path):
         """
@@ -734,45 +866,6 @@ class PDFTextExtractor:
 
         except Exception as e:
             logger.error(f"Error in OCR extraction from bytes: {str(e)}")
-            return ""
-
-    def _post_process_text(self, text):
-        """Apply post-processing to improve text quality."""
-        from app.utils.text_post_processor import TextPostProcessor
-
-        post_processor = TextPostProcessor()
-
-        # Apply all post-processing steps
-        processed_text = post_processor.process(text)
-
-        return processed_text
-
-    def _fallback_ocr_extraction(self, pdf_path=None, pdf_content=None):
-        """Fallback OCR extraction when other methods fail."""
-        try:
-            logger.info("Using fallback OCR extraction")
-
-            if pdf_path:
-                images = convert_from_path(pdf_path, dpi=300, poppler_path=self.poppler_path)
-            else:
-                images = convert_from_bytes(pdf_content, dpi=300)
-
-            texts = []
-            for i, img in enumerate(images):
-                try:
-                    # Preprocess image
-                    processed_img = self._preprocess_image_enhanced(img)
-                    # Extract text
-                    text = pytesseract.image_to_string(processed_img)
-                    texts.append(text)
-                except Exception as e:
-                    logger.error(f"Fallback OCR failed for page {i}: {e}")
-                    texts.append("")
-
-            return "\n\n".join(texts)
-
-        except Exception as e:
-            logger.error(f"Fallback OCR extraction failed: {e}")
             return ""
 
     def _process_images_with_ocr(self, images):
@@ -882,38 +975,6 @@ class PDFTextExtractor:
         except Exception as e:
             logger.warning(f"Image preprocessing error: {str(e)}")
             return img  # Return original image if preprocessing fails
-
-    def clean_text(self, text):
-        """
-        Clean and standardize extracted text with improved line handling.
-
-        Args:
-            text (str): Extracted text
-
-        Returns:
-            str: Cleaned text
-        """
-        if not text:
-            return ""
-
-        # EMERGENCY FIX: Directly join Bajaj claim numbers that got split across lines
-        text = re.sub(r'(OC-\d+-\d+-\d+)[\s\n]+(\d+)', r'\1-\2', text)
-
-        # Join broken lines in claim numbers - critical for Bajaj Allianz documents
-        text = re.sub(r'(OC-\d+-\d+-\d+)[ \t]*\n[ \t]*(\d+)', r'\1-\2', text)
-
-        # Remove excessive whitespace (but preserve newlines for some processing)
-        text = re.sub(r'[ \t]+', ' ', text)
-
-        # Remove non-printable characters
-        text = ''.join(c for c in text if c.isprintable() or c in ['\n', '\t'])
-
-        # Apply OCR corrections for common misrecognitions
-        for error, correction in OCR_CORRECTIONS.items():
-            text = text.replace(error, correction)
-
-        return text.strip()
-
 
 # Usage example (if run directly)
 if __name__ == "__main__":
