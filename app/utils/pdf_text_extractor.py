@@ -136,6 +136,41 @@ class PDFTextExtractor:
             os.makedirs(self.debug_dir, exist_ok=True)
             logger.info(f"Debug mode enabled. Outputs will be saved to {self.debug_dir}")
 
+    def has_table_structure(self, page_text):
+        """Detect if a page contains table-like structures."""
+        lines = page_text.split('\n')
+
+        if len(lines) < 3:
+            return False
+
+        # Count lines with consistent spacing patterns
+        table_pattern_count = 0
+        space_pattern = []
+
+        for line in lines:
+            spaces = [match.start() for match in re.finditer(r'\s{2,}', line)]
+            if len(spaces) >= 2:
+                if not space_pattern:
+                    space_pattern = spaces
+                    table_pattern_count += 1
+                else:
+                    # Check if spacing pattern is similar
+                    matches = sum(1 for pos in spaces if any(abs(pos - p) <= 3 for p in space_pattern))
+                    if matches >= len(spaces) * 0.5:
+                        table_pattern_count += 1
+
+        return table_pattern_count >= 3
+
+    def extract_tables_with_camelot(self, pdf_path, page_num):
+        """Extract tables using camelot for structured tables."""
+        try:
+            tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1))
+            if tables.n > 0:
+                return "\n".join([table.df.to_string() for table in tables])
+        except Exception as e:
+            logger.warning(f"Camelot failed on page {page_num + 1}: {e}")
+        return None
+
     def _extract_via_api(self, pdf_path=None, pdf_content=None):
         """
         Extract text using external API service with comprehensive error handling.
@@ -463,148 +498,138 @@ class PDFTextExtractor:
             logger.error(f"Error extracting text from PDF bytes: {str(e)}")
             return ""
 
-    def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file"):
-        """
-        Core text extraction logic used by all extraction methods.
 
-        Args:
-            pdf_path (str, optional): Path to the PDF file
-            pdf_content (bytes, optional): PDF content as bytes
-            source_type (str): Source type ('file', 'url', or 'bytes')
-
-        Returns:
-            str: Extracted text
-        """
-        # Extraction results from different methods
-        extraction_methods = []
-
-        # 1. Try PyMuPDF (fitz) extraction - often the best for non-scanned PDFs
+    def _extract_text_ocr_from_page(self, pdf_path, page_num):
+        """Extract text from a single page using OCR with enhanced processing."""
         try:
-            if source_type == "file":
-                with fitz.open(pdf_path) as doc:
-                    text_pymupdf = ""
-                    for page_num, page in enumerate(doc):
-                        text_pymupdf += page.get_text("text") + "\n"
+            # Convert to high DPI for better OCR
+            images = convert_from_path(
+                pdf_path,
+                first_page=page_num + 1,
+                last_page=page_num + 1,
+                dpi=300,
+                poppler_path=self.poppler_path
+            )
 
-                        # Save images for debugging if enabled
-                        if self.debug_mode and self.debug_dir:
-                            pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
-                            debug_img_path = os.path.join(
-                                self.debug_dir,
-                                f"{os.path.basename(pdf_path) if pdf_path else 'pdf'}_page{page_num + 1}_pymupdf.png"
-                            )
-                            pix.save(debug_img_path)
-            else:  # url or bytes
-                with fitz.open(stream=pdf_content, filetype="pdf") as doc:
-                    text_pymupdf = ""
-                    for page in doc:
-                        text_pymupdf += page.get_text("text") + "\n"
+            if not images:
+                return ""
 
-            extraction_methods.append(("PyMuPDF", text_pymupdf))
-            logger.debug(f"PyMuPDF extraction: {len(text_pymupdf)} characters")
+            # Preprocess image
+            preprocessed_img = self._preprocess_image_enhanced(images[0])
+
+            # Apply OCR with custom config
+            custom_config = r'--oem 3 --psm 1 -l eng --dpi 300 -c preserve_interword_spaces=1'
+            text = pytesseract.image_to_string(preprocessed_img, config=custom_config)
+
+            # Apply OCR cleaning
+            cleaned_text = self._clean_ocr_text_enhanced(text)
+
+            return cleaned_text
         except Exception as e:
-            logger.warning(f"PyMuPDF extraction failed: {str(e)}")
-
-        # 2. Try PyPDF2 extraction
-        try:
-            if source_type == "file":
-                with open(pdf_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    text_pypdf2 = ""
-                    for page_num in range(len(pdf_reader.pages)):
-                        page = pdf_reader.pages[page_num]
-                        text_pypdf2 += page.extract_text() + "\n"
-            else:  # url or bytes
-                pdf_file = io.BytesIO(pdf_content)
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                text_pypdf2 = ""
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    text_pypdf2 += page.extract_text() + "\n"
-
-            extraction_methods.append(("PyPDF2", text_pypdf2))
-            logger.debug(f"PyPDF2 extraction: {len(text_pypdf2)} characters")
-        except Exception as e:
-            logger.warning(f"PyPDF2 extraction failed: {str(e)}")
-
-        # 3. Try pdfplumber extraction
-        try:
-            if source_type == "file":
-                with pdfplumber.open(pdf_path) as pdf:
-                    text_pdfplumber = ""
-                    for page_num, page in enumerate(pdf.pages):
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_pdfplumber += page_text + "\n"
-
-                            # Save images for debugging if enabled
-                            if self.debug_mode and self.debug_dir:
-                                img = page.to_image()
-                                debug_img_path = os.path.join(
-                                    self.debug_dir,
-                                    f"{os.path.basename(pdf_path) if pdf_path else 'pdf'}_page{page_num + 1}_plumber.png"
-                                )
-                                img.save(debug_img_path)
-            else:  # url or bytes
-                pdf_file = io.BytesIO(pdf_content)
-                with pdfplumber.open(pdf_file) as pdf:
-                    text_pdfplumber = ""
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_pdfplumber += page_text + "\n"
-
-            extraction_methods.append(("pdfplumber", text_pdfplumber))
-            logger.debug(f"pdfplumber extraction: {len(text_pdfplumber)} characters")
-        except Exception as e:
-            logger.warning(f"pdfplumber extraction failed: {str(e)}")
-
-        # 4. Try OCR if direct extraction methods yielded limited text
-        best_text_so_far = max([text for _, text in extraction_methods], key=len, default="")
-        if len(best_text_so_far) < 500:  # Only use OCR if direct methods produced little text
-            logger.info("Standard extraction yielded limited text. Trying OCR...")
-
-            try:
-                if source_type == "file":
-                    text_ocr = self._extract_text_ocr_from_file(pdf_path)
-                else:  # url or bytes
-                    text_ocr = self._extract_text_ocr_from_bytes(pdf_content)
-
-                if text_ocr:
-                    extraction_methods.append(("OCR", text_ocr))
-                    logger.debug(f"OCR extraction: {len(text_ocr)} characters")
-            except Exception as e:
-                logger.warning(f"OCR extraction failed: {str(e)}")
-
-        # Use the best result (longest text)
-        extraction_methods.sort(key=lambda x: len(x[1]), reverse=True)
-
-        if extraction_methods:
-            best_method, best_text = extraction_methods[0]
-            logger.info(f"Best extraction method: {best_method} with {len(best_text)} characters")
-
-            # If the best text is still very short, combine all methods
-            if len(best_text) < 200 and len(extraction_methods) > 1:
-                logger.info("Combining results from all extraction methods")
-                combined_text = "\n\n".join([text for _, text in extraction_methods])
-            else:
-                combined_text = best_text
-
-            # Clean and standardize the text
-            combined_text = self.clean_text(combined_text)
-
-            # Save extracted text for debugging if enabled
-            if self.debug_mode and self.debug_dir:
-                filename = os.path.basename(pdf_path) if pdf_path else "pdf_extraction"
-                debug_text_path = os.path.join(self.debug_dir, f"{filename}_extracted_text.txt")
-                with open(debug_text_path, 'w', encoding='utf-8') as f:
-                    f.write(combined_text)
-                logger.debug(f"Saved extracted text to: {debug_text_path}")
-
-            return combined_text
-        else:
-            logger.error("All text extraction methods failed")
+            logger.error(f"OCR failed for page {page_num + 1}: {str(e)}")
             return ""
+
+    def _preprocess_image_enhanced(self, img):
+        """Enhanced image preprocessing for better OCR results."""
+        # Convert to grayscale
+        img = img.convert('L')
+
+        # Apply contrast enhancement
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+
+        # Convert to numpy array for OpenCV operations if available
+        if HAS_OPENCV:
+            img_np = np.array(img)
+
+            # Apply denoising
+            img_np = cv2.fastNlMeansDenoising(img_np, None, 20, 7, 21)
+
+            # Apply adaptive thresholding
+            img_np = cv2.adaptiveThreshold(
+                img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+
+            # Convert back to PIL Image
+            img = Image.fromarray(img_np)
+
+        return img
+
+    def _extract_text_from_pdf(self, pdf_path=None, pdf_content=None, source_type="file"):
+        """Enhanced text extraction with multi-method approach."""
+
+        # Initialize components
+        from app.utils.text_post_processor import TextPostProcessor
+        post_processor = TextPostProcessor()
+
+        all_text = []
+
+        try:
+            # Open PDF based on source type
+            if source_type == "file":
+                doc = fitz.open(pdf_path)
+            else:
+                doc = fitz.open(stream=pdf_content, filetype="pdf")
+
+            # Process each page
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+
+                # Determine extraction method
+                text = page.get_text("text")
+                word_count = len(text.split())
+
+                if word_count < 5:
+                    # OCR only
+                    page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
+                elif word_count < 20:
+                    # Hybrid approach
+                    text_native = text
+                    text_ocr = self._extract_text_ocr_from_page(pdf_path, page_num)
+                    page_text = self.combine_extraction_results(text_native, text_ocr)
+                else:
+                    # Native extraction with table detection
+                    page_text = text
+
+                    # Check for tables
+                    if self.has_table_structure(page_text):
+                        table_data = self.extract_tables_with_camelot(pdf_path, page_num)
+                        if table_data:
+                            page_text += "\n\n[TABLE DATA]\n" + table_data
+
+                all_text.append(page_text)
+
+            # Combine all pages
+            combined_text = "\n\n--- PAGE BREAK ---\n\n".join(all_text)
+
+            # Apply post-processing
+            processed_text = post_processor.process(combined_text)
+
+            # Clean the text further
+            final_text = self.clean_text(processed_text)
+
+            doc.close()
+
+            return final_text
+
+        except Exception as e:
+            logger.error(f"Error in enhanced text extraction: {str(e)}")
+            return ""
+
+    def combine_extraction_results(self, text_native, text_ocr):
+        """Intelligently combine results from native extraction and OCR."""
+        # If one is empty, return the other
+        if not text_native:
+            return text_ocr
+        if not text_ocr:
+            return text_native
+
+        # If both have content, use the longer one (likely has more information)
+        if len(text_ocr) > len(text_native) * 1.5:
+            return text_ocr
+
+        return text_native
 
     def _extract_text_ocr_from_file(self, pdf_path):
         """
@@ -661,6 +686,17 @@ class PDFTextExtractor:
         except Exception as e:
             logger.error(f"Error in OCR extraction from bytes: {str(e)}")
             return ""
+
+    def _post_process_text(self, text):
+        """Apply post-processing to improve text quality."""
+        from app.utils.text_post_processor import TextPostProcessor
+
+        post_processor = TextPostProcessor()
+
+        # Apply all post-processing steps
+        processed_text = post_processor.process(text)
+
+        return processed_text
 
     def _process_images_with_ocr(self, images):
         """

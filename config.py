@@ -60,3 +60,11 @@ class Config:
                                     r'C:\Program Files\Tesseract-OCR\tesseract.exe' if platform.system() == 'Windows' else
                                     '/usr/bin/tesseract'  # Default path on Linux including Streamlit Cloud
                                     )
+
+    # OCR settings
+    OCR_DPI = int(os.environ.get('OCR_DPI', 300))
+    USE_HYBRID_EXTRACTION = os.environ.get('USE_HYBRID_EXTRACTION', 'True').lower() == 'true'
+
+    # Table extraction settings
+    EXTRACT_TABLES = os.environ.get('EXTRACT_TABLES', 'True').lower() == 'true'
+    CAMELOT_FLAVOR = os.environ.get('CAMELOT_FLAVOR', 'stream')  # or 'lattice'
