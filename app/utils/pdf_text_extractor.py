@@ -136,6 +136,17 @@ class PDFTextExtractor:
             os.makedirs(self.debug_dir, exist_ok=True)
             logger.info(f"Debug mode enabled. Outputs will be saved to {self.debug_dir}")
 
+        # Detect if running in Streamlit Cloud
+        self.is_cloud = 'STREAMLIT_SHARING' in os.environ
+
+        # Adjust settings for cloud environment
+        if self.is_cloud:
+            self.max_workers = 1  # Reduce parallelism
+            self.dpi = 150  # Lower DPI for images
+        else:
+            self.max_workers = 4  # Default for local
+            self.dpi = 300  # Higher quality locally
+
     def _extract_via_api(self, pdf_path=None, pdf_content=None):
         """
         Extract text using external API service with comprehensive error handling.
@@ -617,10 +628,10 @@ class PDFTextExtractor:
             # Convert PDF to images
             images = convert_from_path(
                 pdf_path,
-                dpi=300,  # Higher DPI for better quality
+                dpi=self.dpi,  # Higher DPI for better quality
                 fmt="jpeg",
                 poppler_path=self.poppler_path,
-                thread_count=2
+                thread_count=1 if self.is_cloud else 2
             )
 
             # Process images with OCR in parallel
@@ -670,7 +681,7 @@ class PDFTextExtractor:
             str: Combined OCR text
         """
         # Maximum number of worker threads
-        max_workers = min(4, len(images))
+        max_workers = min(self.max_workers, len(images))
 
         try:
             # Process images in parallel
