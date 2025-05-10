@@ -15,4 +15,4 @@ maxUploadSize = 200
 gatherUsageStats = false
 
 [server.timeout]
-app = 300
+app = 1800
