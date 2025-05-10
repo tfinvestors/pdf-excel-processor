@@ -1,5 +1,9 @@
 # streamlit_app.py
 import streamlit as st
+from streamlit_config import configure_streamlit_environment
+
+configure_streamlit_environment()
+
 import os
 import logging
 import pandas as pd
