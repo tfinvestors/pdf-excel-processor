@@ -8,20 +8,6 @@ load_dotenv()
 
 
 class Config:
-    # PDF Text Extraction API Configuration
-    if 'STREAMLIT_SHARING' in os.environ:
-        # For Streamlit Cloud, use a public API endpoint or disable API extraction
-        PDF_EXTRACTION_API_URL = os.environ.get(
-            'PDF_EXTRACTION_API_URL',
-            None  # Set to None to force local extraction in cloud
-        )
-    else:
-        # For local development
-        PDF_EXTRACTION_API_URL = os.environ.get(
-            'PDF_EXTRACTION_API_URL',
-            'http://localhost:8000/api/v1/documents/upload'
-        )
-
     # Fallback and Debugging Options
     DEBUG_MODE = os.environ.get('DEBUG_MODE', 'False').lower() == 'true'
 
@@ -37,10 +23,6 @@ class Config:
 
     # ML Model Configuration
     USE_ML_MODEL = os.environ.get('USE_ML_MODEL', 'True').lower() == 'true'
-
-    # API Call Configuration
-    MAX_API_RETRIES = int(os.environ.get('MAX_API_RETRIES', 3))
-    API_TIMEOUT = int(os.environ.get('API_TIMEOUT', 60))
 
     # Define common paths for application
     APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
