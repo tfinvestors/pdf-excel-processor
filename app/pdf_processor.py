@@ -96,28 +96,38 @@ class PDFProcessor:
         ]
 
     def extract_text(self, pdf_path):
-        """
-        Extract text from PDF using the unified PDF text extractor.
-
-        Args:
-            pdf_path (str): Path to the PDF file
-
-        Returns:
-            str: Extracted text
-        """
+        """Extract text from PDF using the unified approach."""
         logger.info(f"Processing PDF: {pdf_path}")
 
-        # Use the unified text extractor
-        extracted_text = self.text_extractor.extract_from_file(pdf_path)
+        try:
+            # Import the PDF reader
+            from app.processors.pdf_reader import PdfReader
 
-        # Save combined text for debugging
-        if self.debug_mode and self.debug_dir:
-            debug_text_path = os.path.join(self.debug_dir, f"{os.path.basename(pdf_path)}_combined_text.txt")
-            with open(debug_text_path, 'w', encoding='utf-8') as f:
-                f.write(extracted_text)
-            logger.debug(f"Saved combined extracted text: {debug_text_path}")
+            # Initialize and process
+            pdf_reader = PdfReader()
+            result = pdf_reader.process_pdf(pdf_path)
 
-        return extracted_text
+            # Combine all page results
+            combined_text = ""
+            for page_result in result["results"]:
+                if page_result["text"]:
+                    combined_text += page_result["text"] + "\n"
+                if page_result["table_data"]:
+                    combined_text += "\n[TABLE DATA]\n" + page_result["table_data"] + "\n"
+
+            # Apply post-processing
+            if combined_text:
+                from app.processors.text_post_processor import TextPostProcessor
+                post_processor = TextPostProcessor()
+                processed_text = post_processor.process(combined_text)
+                return self.text_extractor.clean_text(processed_text)
+
+            return combined_text
+
+        except Exception as e:
+            logger.error(f"Error extracting text: {str(e)}")
+            # Fallback to original approach
+            return self.text_extractor.extract_from_file(pdf_path)
 
     def extract_generic_data(self, text):
         """

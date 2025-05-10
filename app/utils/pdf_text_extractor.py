@@ -379,6 +379,16 @@ class PDFTextExtractor:
         doc = None  # Initialize doc variable
 
         try:
+            # Import the specialized processors
+            from app.processors.pdf_reader import PdfReader
+            from app.processors.ocr_processor import OCRProcessor
+            from app.processors.table_processor import TableProcessor
+
+            # Initialize processors
+            pdf_reader = PdfReader()
+            ocr_processor = OCRProcessor()
+            table_processor = TableProcessor()
+
             # Open PDF based on source type
             if source_type == "file":
                 if not os.path.exists(pdf_path):
@@ -394,35 +404,57 @@ class PDFTextExtractor:
                     page = doc[page_num]
                     page_text = ""
 
-                    # Try native extraction first
-                    try:
+                    # Determine the best extraction method for the page
+                    extraction_method = pdf_reader.determine_extraction_method(page)
+
+                    if extraction_method == "ocr":
+                        # OCR only
+                        logger.info(f"Processing page {page_num + 1} with OCR only")
+                        ocr_result = ocr_processor.process_page(pdf_path if pdf_path else None, page_num)
+                        if ocr_result and isinstance(ocr_result, (list, tuple)) and len(ocr_result) > 0:
+                            page_text = ocr_result[0] or ""
+
+                    elif extraction_method == "hybrid":
+                        # Hybrid approach
+                        logger.info(f"Processing page {page_num + 1} with hybrid approach")
+                        combined_text, table_data = pdf_reader.extract_with_hybrid_approach(
+                            pdf_path if pdf_path else None, page_num
+                        )
+                        page_text = combined_text
+
+                        # Add table data if found
+                        if table_data:
+                            page_text += "\n\n[TABLE DATA]\n" + table_data
+
+                    else:
+                        # Native extraction
+                        logger.info(f"Processing page {page_num + 1} with native text extraction")
                         text = page.get_text("text")
                         word_count = len(text.split())
 
                         if word_count < 5:
-                            # OCR only
-                            page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
-                        elif word_count < 20:
-                            # Hybrid approach
-                            text_native = text
-                            text_ocr = self._extract_text_ocr_from_page(pdf_path, page_num)
-                            page_text = self.combine_extraction_results(text_native, text_ocr)
+                            # Fallback to OCR
+                            ocr_result = ocr_processor.process_page(pdf_path if pdf_path else None, page_num)
+                            if ocr_result and len(ocr_result) > 0:
+                                page_text = ocr_result[0] or ""
                         else:
-                            # Native extraction
                             page_text = text
-                    except Exception as e:
-                        logger.warning(f"Native extraction failed for page {page_num}: {e}")
-                        # Fallback to OCR
-                        page_text = self._extract_text_ocr_from_page(pdf_path, page_num)
 
-                    # Try table extraction if enabled
-                    if page_text and self.has_table_structure(page_text):
-                        try:
-                            table_data = self.extract_tables_with_camelot(pdf_path, page_num)
-                            if table_data:
-                                page_text += "\n\n[TABLE DATA]\n" + table_data
-                        except Exception as e:
-                            logger.warning(f"Table extraction failed for page {page_num}: {e}")
+                    # Check for tables if we haven't found any yet
+                    if pdf_reader.has_table_structure(page_text):
+                        # Try camelot first
+                        camelot_result = table_processor.process_with_camelot(
+                            pdf_path if pdf_path else None, page_num
+                        )
+                        if camelot_result and camelot_result[0]:
+                            page_text += "\n\n[TABLE DATA]\n" + camelot_result[0]
+                        else:
+                            # Try pdfplumber as fallback
+                            plumber_result = table_processor.process_with_pdfplumber(
+                                pdf_path if pdf_path else None, page_num
+                            )
+                            if plumber_result and len(plumber_result) > 1 and plumber_result[1]:
+                                page_text += "\n\n[TABLE DATA]\n" + plumber_result[1]
 
                     all_text.append(page_text)
 
@@ -442,7 +474,9 @@ class PDFTextExtractor:
             # Apply post-processing only if we have text
             if combined_text:
                 try:
-                    processed_text = self._post_process_text(combined_text)
+                    from app.processors.text_post_processor import TextPostProcessor
+                    post_processor = TextPostProcessor()
+                    processed_text = post_processor.process(combined_text)
                     final_text = self.clean_text(processed_text)
                 except Exception as e:
                     logger.error(f"Post-processing failed: {e}")
@@ -464,7 +498,6 @@ class PDFTextExtractor:
                 doc.close()
             # Clean up memory
             self._cleanup_memory()
-
     # 3. Specific extraction methods
     def _extract_text_ocr_from_page(self, pdf_path, page_num):
         """Extract text from a single page using OCR with timeout protection."""

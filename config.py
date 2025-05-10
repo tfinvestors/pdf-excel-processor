@@ -62,7 +62,7 @@ class Config:
                                     )
 
     # OCR settings
-    OCR_DPI = int(os.environ.get('OCR_DPI', 300))
+    OCR_DPI = int(os.environ.get('OCR_DPI', '300'))
     USE_HYBRID_EXTRACTION = os.environ.get('USE_HYBRID_EXTRACTION', 'True').lower() == 'true'
 
     # Table extraction settings
