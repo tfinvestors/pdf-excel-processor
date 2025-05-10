@@ -1,3 +1,4 @@
+# app/processors/pdf_reader.py
 import pdfplumber
 import fitz
 import camelot
@@ -7,7 +8,7 @@ import time
 import logging
 import os
 import re
-from config import Config
+from app.core.config import settings
 from app.processors.ocr_processor import OCRProcessor
 from app.processors.table_processor import TableProcessor
 
@@ -33,7 +34,6 @@ class PdfReader:
             return "text"
 
     def process_page(self, pdf_path, page_num):
-        # Existing OCR processing code
         text, table_data, ocr_time, confidence = self.ocr_processor.process_page(pdf_path, page_num)
 
         # Log raw OCR text

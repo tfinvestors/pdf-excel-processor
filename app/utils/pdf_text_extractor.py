@@ -15,6 +15,9 @@ from PIL import Image, ImageEnhance
 import signal
 from contextlib import contextmanager
 import platform
+import time
+import json
+import traceback
 
 try:
     import cv2
@@ -44,13 +47,6 @@ except ImportError:
 
     HAS_OPENCV = False
     logger.warning("OpenCV (cv2) import failed. Some image processing features will be limited.")
-
-import time
-import json
-import traceback
-
-# Configure logging
-logger = logging.getLogger("pdf_extractor")
 
 
 @contextmanager
@@ -111,6 +107,10 @@ OCR_CORRECTIONS = {
     "0C": "OC"
 }
 
+# Configure logging
+logger = logging.getLogger("pdf_extractor")
+
+
 class PDFTextExtractor:
     """
     Unified PDF text extraction class used by both training and production code.
@@ -118,13 +118,7 @@ class PDFTextExtractor:
     """
 
     def __init__(self, api_url=None, poppler_path=None, debug_mode=False):
-        """
-        Initialize the PDF text extractor.
-
-        Args:
-            poppler_path (str): Path to poppler binaries for pdf2image
-            debug_mode (bool): Enable debug mode for extra logging
-        """
+        """Initialize the PDF text extractor."""
         self.api_url = api_url
         self.poppler_path = poppler_path
         self.debug_mode = debug_mode
