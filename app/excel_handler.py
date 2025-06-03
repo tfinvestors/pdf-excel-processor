@@ -369,6 +369,24 @@ class ExcelHandler:
                         logger.info(f"Found exact case-insensitive match in column {column} at row {index}")
                         return index
 
+            # ─── INSERT THE “BAJAJ PREFIX” BLOCK BELOW ───
+            # If cleaned_id looks exactly like “OC-xx-xxxx-xxxx” (three hyphens), try startswith on “Client Ref. No.”
+            if cleaned_id.upper().startswith("OC-") and cleaned_id.count("-") == 3:
+                logger.info(f"Trying Bajaj “startswith” fallback for prefix: {cleaned_id}")
+                col = self.df[self.client_ref_column].astype(str)
+                prefix_matches = col[col.str.startswith(cleaned_id, na=False)]
+                if len(prefix_matches) == 1:
+                    index = prefix_matches.index[0]
+                    full_excel_id = col.iloc[index]
+                    logger.info(f"Bajaj prefix match succeeded: Excel value “{full_excel_id}”")
+                    return index
+                elif len(prefix_matches) > 1:
+                    logger.error(f"Multiple rows start with {cleaned_id}; cannot choose one unambiguously.")
+                    return None
+                else:
+                    logger.error(f"No rows in '{self.client_ref_column}' start with {cleaned_id}.")
+
+
             # If no match yet, try to look specifically for just the numeric part of F-pattern identifiers
             if not match_found and re.match(r'F\d{7}', cleaned_id):
                 # Try matching just the 7-digit part without the F prefix
