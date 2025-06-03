@@ -1452,92 +1452,104 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # 1) First, try to find a two‐line split ID:
-            #    a) current_line has “OC-dd-dddd-dddd” prefix
-            #    b) next_line begins with 8 digits (the “00000009” suffix)
-            lines = text.splitlines()
-            for idx, ln in enumerate(lines):
-                ln_strip = ln.strip()
-                # look for prefix on this line:
-                prefix_match = re.search(r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})', ln_strip, re.IGNORECASE)
-                if prefix_match and (idx + 1) < len(lines):
-                    next_line = lines[idx + 1].strip()
-                    suffix_match = re.match(r'^(\d{8})', next_line)
-                    if suffix_match:
-                        # We have a split ID: build the full ID, then pull numbers from both lines
-                        prefix = prefix_match.group(1).replace(" ", "").strip()
-                        suffix = suffix_match.group(1)
-                        full_id = f"{prefix}-{suffix}"
-                        logger.info(f"Found split‐over‐two‐lines Bajaj ID: {full_id}")
+            # ── STEP 1: Try one big regex that spans both lines (prefix + suffix + date + gross + tds + net) ──
+            #    The pattern looks for:
+            #     • “OC-XX-XXXX-XXXX”  (prefix)
+            #     • some whitespace or newlines
+            #     • exactly 8 digits       (suffix)
+            #     • some whitespace
+            #     • a date in either DD-MMM-YYYY or DD/MM/YYYY format
+            #     • some whitespace
+            #     • three groups of numbers (gross, tds, net), each possibly with commas or decimals
+            #
+            two_line_pattern = re.compile(
+                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})'  # capture the “OC-24-1501-4089” prefix
+                r'[\s\n]+'  # allow any whitespace or newline
+                r'(\d{8})'  # capture the “00000009” suffix
+                r'[\s\n]+'  # whitespace or newline
+                r'(\d{2}[-/][A-Za-z]{3}[-/]\d{4}|\d{2}[-/]\d{2}[-/]\d{4})'  # capture date “02-Jan-2025” or “02/01/2025”
+                r'[\s\n]+'  # whitespace
+                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)'  # capture “162150” (gross)  – though we only need tds/net
+                r'[\s\n]+'  # whitespace
+                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)'  # capture “14812” (TDS)
+                r'[\s\n]+'  # whitespace
+                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',  # capture “148138” (net = receipt)
+                re.IGNORECASE | re.DOTALL
+            )
 
-                        # Combine the two lines into one chunk so we can extract “148138” as the final number
-                        combined = ln_strip + " " + next_line
-                        all_nums = re.findall(r'(\d+(?:\.\d{1,2})?)', combined)
-                        if len(all_nums) >= 1:
-                            # Last token is receipt_amount, second‐to‐last is TDS
-                            receipt_amt = all_nums[-1]
-                            tds_amt = all_nums[-2] if len(all_nums) >= 2 else None
+            m = two_line_pattern.search(text)
+            if m:
+                # We got a match spanning both “lines”
+                prefix_part = m.group(1).replace(" ", "").strip()  # “OC-24-1501-4089”
+                suffix_part = m.group(2).strip()  # “00000009”
+                date_part = m.group(3).strip()  # “02-Jan-2025” (or “02/01/2025”)
+                # gross_amt  = m.group(4)  # 162150    (we don’t actually need it)
+                tds_part = m.group(5).replace(",", "").strip()  # “14812”
+                net_part = m.group(6).replace(",", "").strip()  # “148138”
 
-                            data['unique_id'] = full_id
-                            data['receipt_amount'] = receipt_amt
-                            if tds_amt:
-                                data['tds'] = tds_amt
-                                data['tds_computed'] = 'No'
-                            # Try to grab a date from the same combined text (e.g. “02-Jan-2025”)
-                            date_m = re.search(r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})', combined)
-                            if date_m:
-                                data['receipt_date'] = date_m.group(1)
+                full_id = f"{prefix_part}-{suffix_part}"
+                data['unique_id'] = full_id
+                data['receipt_amount'] = net_part
+                data['tds'] = tds_part
+                data['tds_computed'] = 'No'  # TDS was explicitly present
+                data['receipt_date'] = date_part
 
-                            logger.debug(
-                                f"  → Overwrite from split‐ID chunk: receipt_amount={data['receipt_amount']}, tds={data.get('tds')}, date={data.get('receipt_date')}")
-                        break
+                logger.info(f"Found split-over-two-lines Bajaj ID: {full_id}")
+                logger.debug(f"  → Extracted receipt_amount={net_part}, tds={tds_part}, date={date_part}")
             else:
-                # 2) If no two‐line match at all, fall back to the old “single‐line prefix” approach
-                prefix_match = re.search(r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})', text, re.IGNORECASE)
+                # ── STEP 2: FALLBACK to “single-line prefix” + generic amount/date/tds patterns ──
+                prefix_match = re.search(
+                    r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})',
+                    text,
+                    re.IGNORECASE
+                )
                 if prefix_match:
                     p1, p2, p3 = prefix_match.group(1), prefix_match.group(2), prefix_match.group(3)
                     data['unique_id'] = f"OC-{p1}-{p2}-{p3}"
-                    logger.info(f"Extracted Bajaj prefix on one line: {data['unique_id']}")
+                    logger.info(f"Extracted Bajaj prefix (fallback): {data['unique_id']}")
 
-                    # Extract amount, date, TDS using same regex as before
-                    for pat in [
+                    # Generic amount (still likely “8412.0” if two-line didn’t fire)
+                    for amt_pat in [
                         r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                         r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                         r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                         r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                     ]:
-                        m = re.search(pat, text, re.IGNORECASE)
-                        if m:
-                            data['receipt_amount'] = m.group(1).replace(",", "")
+                        m2 = re.search(amt_pat, text, re.IGNORECASE)
+                        if m2:
+                            data['receipt_amount'] = m2.group(1).replace(",", "")
                             logger.debug(f"Extracted Bajaj Allianz amount (fallback): {data['receipt_amount']}")
                             break
 
-                    for pat in [
+                    # Generic date
+                    for date_pat in [
                         r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',
                         r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
                         r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
                         r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
                     ]:
-                        d = re.search(pat, text, re.IGNORECASE)
-                        if d:
-                            data['receipt_date'] = d.group(1).strip()
+                        d2 = re.search(date_pat, text, re.IGNORECASE)
+                        if d2:
+                            data['receipt_date'] = d2.group(1).strip()
                             logger.debug(f"Extracted Bajaj Allianz date (fallback): {data['receipt_date']}")
                             break
 
-                    for pat in [
+                    # Generic TDS
+                    for tds_pat in [
                         r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                         r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                         r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                     ]:
-                        t = re.search(pat, text, re.IGNORECASE)
-                        if t:
-                            data['tds'] = t.group(1).replace(",", "")
+                        t2 = re.search(tds_pat, text, re.IGNORECASE)
+                        if t2:
+                            data['tds'] = t2.group(1).replace(",", "")
                             data['tds_computed'] = 'No'
                             logger.debug(f"Extracted Bajaj Allianz TDS (fallback): {data['tds']}")
                             break
 
-            # 3) Finally return _after_ trying both split‐over‐two‐lines and single‐line fallback
+            # ── STEP 3: Only now do we return (after trying both two-line and fallback) ──
             return data, detected_provider
+
 
 
 
