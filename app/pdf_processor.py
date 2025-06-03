@@ -1456,48 +1456,11 @@ class PDFProcessor:
             if "standard" in text.lower() and "chartered" in text.lower():
                 logger.info("Detected Standard Chartered Bajaj Allianz document")
 
-                # Look for the OC pattern first
-                oc_base_match = re.search(r'(OC-\d+-\d+-\d+)', text)
-                if oc_base_match:
-                    oc_base = oc_base_match.group(1)
-                    logger.info(f"Found OC base pattern: {oc_base}")
-
-                    # Look for the continuation (8 digits)
-                    # Search in the area after the OC pattern
-                    search_start = oc_base_match.end()
-                    search_end = min(search_start + 300, len(text))  # Search within 300 chars
-                    search_text = text[search_start:search_end]
-
-                    # Try multiple patterns for the continuation
-                    continuation_patterns = [
-                        r'[-\s\n]*(\d{8})',  # With optional dash, space, or newline
-                        r'\n\s*(\d{8})',  # On next line
-                        r'\s+(\d{8})',  # With spaces
-                        r'-(\d{8})',  # With dash
-                    ]
-
-                    cont_match = None
-                    for pattern in continuation_patterns:
-                        cont_match = re.search(pattern, search_text)
-                        if cont_match:
-                            logger.info(f"Found continuation with pattern {pattern}: {cont_match.group(1)}")
-                            break
-
-                    if cont_match:
-                        data['unique_id'] = f"{oc_base}-{cont_match.group(1)}"
-                        logger.info(f"Standard Chartered fix: Extracted complete claim ID: {data['unique_id']}")
-                    else:
-                        # Try to find the complete pattern in the full text
-                        complete_match = re.search(r'(OC-\d+-\d+-\d+-\d{8})', text)
-                        if complete_match:
-                            data['unique_id'] = complete_match.group(1)
-                            logger.info(f"Found complete claim ID pattern: {data['unique_id']}")
-                        else:
-                            # Last resort: look in the table area
-                            table_match = re.search(r'Claim\s+No.*?(OC-\d+-\d+-\d+).*?(\d{8})', text, re.DOTALL)
-                            if table_match:
-                                data['unique_id'] = f"{table_match.group(1)}-{table_match.group(2)}"
-                                logger.info(f"Found claim ID from table pattern: {data['unique_id']}")
+                # Look for the Generic OC-…-…-… pattern: grab “OC-<digits>-<digits>-<digits>” PLUS eight digits, no matter what non-digit characters come in between.
+                match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text)
+                if match:
+                    data['unique_id'] = f"{match.group(1)}-{match.group(2)}"
+                    logger.info(f"Extracted complete claim ID: {data['unique_id']}")
 
             # APPROACH 2: More general OC pattern matching if unique_id not yet found
             if 'unique_id' not in data or not data['unique_id']:
@@ -1990,37 +1953,13 @@ class PDFProcessor:
 
         # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
         if ("standard" in text.lower() and "chartered" in text.lower()) and "bajaj allianz" in text.lower():
-            # Look for "OC-24-1501-4089" pattern
-            oc_base = re.search(r'(OC-\d+-\d+-\d+)', text)
+            # One regex to grab “OC-<digits>-<digits>-<digits>” plus 8 digits, regardless of separators
+            match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text)
+            if match:
+                unique_id = f"{match.group(1)}-{match.group(2)}"
+                logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
 
-            if oc_base:
-                # Look for "00000009" pattern that appears near the OC pattern
-                # Try multiple patterns to catch different OCR outputs
-                cont_patterns = [
-                    r'[\s\n]*(\d{8})',  # 8 digits with optional whitespace/newline
-                    r'-\s*(\d{8})',  # dash followed by 8 digits
-                    r'\s+(\d{8})',  # space followed by 8 digits
-                ]
-
-                cont_match = None
-                search_text = text[oc_base.end():oc_base.end() + 200]  # Increased search range
-
-                for pattern in cont_patterns:
-                    cont_match = re.search(pattern, search_text)
-                    if cont_match:
-                        break
-
-                if cont_match:
-                    unique_id = f"{oc_base.group(1)}-{cont_match.group(1)}"
-                    logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
-                else:
-                    # Try to find the complete pattern in one go
-                    complete_pattern = re.search(r'(OC-\d+-\d+-\d+-\d{8})', text)
-                    if complete_pattern:
-                        unique_id = complete_pattern.group(1)
-                        logger.info(f"EMERGENCY FIX: Found complete claim ID: {unique_id}")
-
-                # Extract other data from REMITTANCE AMOUNT field which is reliable
+                # Extract other data from REMITTANCE AMOUNT field (reliable anchor)
                 amount_match = re.search(r'REMITTANCE AMOUNT\s*:\s*(\d+(?:\.\d+)?)', text)
                 if amount_match:
                     data_points['receipt_amount'] = amount_match.group(1)
@@ -2029,7 +1968,6 @@ class PDFProcessor:
                 if date_match:
                     data_points['receipt_date'] = date_match.group(1)
 
-                # Set detected provider explicitly
                 detected_provider = "bajaj_allianz"
 
         # Special handling for Bajaj Allianz documents with table data
