@@ -2972,77 +2972,35 @@ class PDFProcessor:
                     i += 1
                     continue
 
-                # Check if this looks like the start of a data row (reference number)
-                if re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', line):
-                    # This is likely a row start
-                    full_row = line
-
-                    # Check if the next line might be a continuation
-                    if i + 1 < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i + 1]):
-                        full_row += " " + lines[i + 1].strip()
-                        i += 2
+                claim_match = re.search(r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4}[-\s]*\d{8})', line, re.IGNORECASE)
+                if claim_match:
+                    full_id = claim_match.group(1).replace(" ", "")
+                    # Now grab all decimal/whole numbers in that same line: [gross, service tax, TDS, net]
+                    numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
+                    # We expect something like: [ref, date, gross, ser_tax, tds, net] or [ref, date, gross, tds, net]
+                    # So net amount should be the last number in the list.
+                    if len(numbers) >= 1:
+                        receipt_amount = numbers[-1]  # last captured number is Net Amount
+                        # TDS is typically second-to-last
+                        tds_amount = numbers[-2] if len(numbers) >= 2 else None
                     else:
-                        i += 1
+                        receipt_amount = None
+                        tds_amount = None
 
-                    # Now extract the data using a more specific pattern
-                    # Looking for values in a specific order
-                    row_data = {}
+                    row_data = {'unique_id': full_id}
+                    if receipt_amount:
+                        row_data['receipt_amount'] = receipt_amount
+                    if tds_amount:
+                        row_data['tds'] = tds_amount
+                        row_data['tds_computed'] = 'No'
 
-                    # Extract reference number and date
-                    ref_match = re.search(r'(\d{4,})\s+(\d{2}/\d{2}/\d{1,4})', full_row)
-                    if ref_match:
-                        row_data['reference'] = ref_match.group(1).strip()
-                        row_data['receipt_date'] = ref_match.group(2).strip()
+                    # If there’s a date somewhere in the same line, pick it up (e.g. “02/01/2025” or “02-Jan-2025”)
+                    date_match = re.search(r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})', line)
+                    if date_match:
+                        row_data['receipt_date'] = date_match.group(1)
 
-                    # Extract description number
-                    desc_match = re.search(r'(\d{2}/\d{2}/\d{1,4})\s+(\d+)', full_row)
-                    if desc_match:
-                        row_data['description'] = desc_match.group(2).strip()
-
-                    # Extract claim number - CRITICAL FIX HERE
-                    claim_pattern = r'OC-\d+-\d+-\d+-\d+'  # Pattern to match entire claim number including splits
-                    claim_match = re.search(claim_pattern, full_row)
-                    if claim_match:
-                        row_data['unique_id'] = claim_match.group(0).strip()
-                    else:
-                        # Try a more flexible pattern to handle split claim numbers
-                        claim_parts = re.findall(r'OC-\d+-\d+-\d+[-\s]*(\d+)?', full_row)
-                        if claim_parts:
-                            # If we have a partial match, look for continuation in adjacent lines
-                            partial_id = re.search(r'(OC-\d+-\d+-\d+)', full_row).group(1)
-
-                            # Check next line for remaining digits if we don't have a complete ID
-                            continuation = ""
-                            if i < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i].strip()):
-                                continuation = re.search(r'^\s*(\d+)', lines[i].strip())
-                                if continuation:
-                                    continuation = continuation.group(1)
-                                    i += 1  # Advance if we consumed the next line
-
-                            # Combine parts to form complete ID
-                            row_data['unique_id'] = f"{partial_id}-{continuation}" if continuation else partial_id
-
-                    # Extract amount values using positions or patterns
-                    amounts = re.findall(r'(\d+(?:\.\d+)?)', full_row)
-                    if len(amounts) >= 4:  # We need at least reference, date, description, and values
-                        idx = 3  # Start from the 4th number (after ref, date, desc)
-                        if len(amounts) > idx:
-                            row_data['gross_amount'] = amounts[idx]
-                            idx += 1
-                        if len(amounts) > idx:
-                            row_data['service_tax'] = amounts[idx]
-                            idx += 1
-                        if len(amounts) > idx:
-                            row_data['tds'] = amounts[idx]
-                            row_data['tds_computed'] = 'No'  # TDS is directly from document
-                            idx += 1
-                        if len(amounts) > idx:
-                            row_data['receipt_amount'] = amounts[idx]
-
-                    # Add the row data if we have the essential fields
-                    if 'unique_id' in row_data and 'receipt_amount' in row_data:
-                        table_data.append(row_data)
-                        logger.info(f"Extracted table row with claim ID: {row_data['unique_id']}")
+                    table_data.append(row_data)
+                    i += 1
                 else:
                     i += 1
 
