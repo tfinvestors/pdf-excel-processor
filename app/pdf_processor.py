@@ -1463,18 +1463,13 @@ class PDFProcessor:
             #     • three groups of numbers (gross, tds, net), each possibly with commas or decimals
             #
             two_line_pattern = re.compile(
-                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})'  # capture the “OC-24-1501-4089” prefix
-                r'[\s\n]+'  # allow any whitespace or newline
-                r'(\d{8})'  # capture the “00000009” suffix
-                r'[\s\n]+'  # whitespace or newline
-                r'(\d{2}[-/][A-Za-z]{3}[-/]\d{4}|\d{2}[-/]\d{2}[-/]\d{4})'  # capture date “02-Jan-2025” or “02/01/2025”
-                r'[\s\n]+'  # whitespace
-                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)'  # capture “162150” (gross)  – though we only need tds/net
-                r'[\s\n]+'  # whitespace
-                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)'  # capture “14812” (TDS)
-                r'[\s\n]+'  # whitespace
-                r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',  # capture “148138” (net = receipt)
-                re.IGNORECASE | re.DOTALL
+                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})'  # prefix
+                r'\s+(\d{8})'  # suffix
+                r'\s+(\d{2}[-/]\d{2}[-/]\d{4})'  # date in DD/MM/YYYY
+                r'\s+(\d{1,6})'  # gross (we don’t need it)
+                r'\s+(\d{1,6})'  # TDS
+                r'\s+(\d{1,6})',  # NET = receipt
+                re.IGNORECASE
             )
 
             start = text.lower().find("oc-24-1501-4089")
