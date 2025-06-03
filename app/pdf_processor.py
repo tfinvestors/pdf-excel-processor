@@ -1453,10 +1453,28 @@ class PDFProcessor:
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
             # APPROACH 1: Standard Chartered specific fix
-            if "standard @ chartered" in text.lower() or "standard chartered" in text.lower():
+            if "standard" in text.lower() and "chartered" in text.lower():
                 # Check for table row with specific format
-                table_row_pattern = r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\n\s*\d{8})'
-                table_match = re.search(table_row_pattern, text, re.DOTALL)
+                table_row_patterns = [
+                    r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\n\s*\d{8})',
+                    r'OC-\d+-\d+-\d+[-\s\n]+\d{8}',  # More flexible pattern
+                    r'(OC-\d+-\d+-\d+)[\s\n]*(\d{8})'  # Capture groups pattern
+                ]
+                for pattern in table_row_patterns:
+                    table_match = re.search(pattern, text, re.DOTALL)
+                    if table_match:
+                        if pattern == table_row_patterns[2]:  # The capture groups pattern
+                            data['unique_id'] = f"{table_match.group(1)}-{table_match.group(2)}"
+                        else:
+                            # Extract the OC pattern from the match
+                            oc_match = re.search(r'(OC-\d+-\d+-\d+)', table_match.group(0))
+                            cont_match = re.search(r'(\d{8})', table_match.group(0)[oc_match.end():])
+                            if oc_match and cont_match:
+                                data['unique_id'] = f"{oc_match.group(1)}-{cont_match.group(1)}"
+
+                        if 'unique_id' in data:
+                            logger.info(f"DIRECT FIX: Extracted Bajaj claim ID: {data['unique_id']}")
+                            break
 
                 if table_match:
                     # Get the table row content
@@ -1962,25 +1980,43 @@ class PDFProcessor:
                 detected_provider = "icici_lombard"
 
         # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
-        if "standard @ chartered" in text.lower() and "bajaj allianz" in text.lower():
+        if ("standard" in text.lower() and "chartered" in text.lower()) and "bajaj allianz" in text.lower():
             # Look for "OC-24-1501-4089" pattern
             oc_base = re.search(r'(OC-\d+-\d+-\d+)', text)
 
-            # Look for "00000009" pattern that appears near the beginning of a line
-            # after OC pattern (this is very specific to this document layout)
-            cont_pattern = r'\n\s*(\d{8})'
-            cont_match = re.search(cont_pattern, text[oc_base.end():oc_base.end() + 100])
+            if oc_base:
+                # Look for "00000009" pattern that appears near the OC pattern
+                # Try multiple patterns to catch different OCR outputs
+                cont_patterns = [
+                    r'[\s\n]*(\d{8})',  # 8 digits with optional whitespace/newline
+                    r'-\s*(\d{8})',  # dash followed by 8 digits
+                    r'\s+(\d{8})',  # space followed by 8 digits
+                ]
 
-            if oc_base and cont_match:
-                unique_id = f"{oc_base.group(1)}-{cont_match.group(1)}"
-                logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
+                cont_match = None
+                search_text = text[oc_base.end():oc_base.end() + 200]  # Increased search range
+
+                for pattern in cont_patterns:
+                    cont_match = re.search(pattern, search_text)
+                    if cont_match:
+                        break
+
+                if cont_match:
+                    unique_id = f"{oc_base.group(1)}-{cont_match.group(1)}"
+                    logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
+                else:
+                    # Try to find the complete pattern in one go
+                    complete_pattern = re.search(r'(OC-\d+-\d+-\d+-\d{8})', text)
+                    if complete_pattern:
+                        unique_id = complete_pattern.group(1)
+                        logger.info(f"EMERGENCY FIX: Found complete claim ID: {unique_id}")
 
                 # Extract other data from REMITTANCE AMOUNT field which is reliable
-                amount_match = re.search(r'REMITTANCE AMOUNT\s*:\s*(\d+\.\d+)', text)
+                amount_match = re.search(r'REMITTANCE AMOUNT\s*:\s*(\d+(?:\.\d+)?)', text)
                 if amount_match:
                     data_points['receipt_amount'] = amount_match.group(1)
 
-                date_match = re.search(r'VALUE DATE[»:]?\s*(\d{2}-[A-Za-z]{3}-\d{4})', text)
+                date_match = re.search(r'VALUE DATE\s*[»:]?\s*(\d{2}-[A-Za-z]{3}-\d{4})', text)
                 if date_match:
                     data_points['receipt_date'] = date_match.group(1)
 
