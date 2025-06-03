@@ -1452,24 +1452,40 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # (1) Try to capture the full “OC-<digits>-<digits>-<digits>-<8 digits>” in one shot, case‐insensitive
-            full_oc_match = re.search(r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+[-\s]*\d{8})', text, re.IGNORECASE)
+            # (1) Try to capture “OC” + three groups of digits + exactly eight digits,
+            #     but allow ANY spaces/newlines between digits. Then strip all whitespace.
+            full_oc_match = re.search(
+                r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+[-\s]*(?:\d[-\s]*){8})',
+                text,
+                re.IGNORECASE
+            )
             if full_oc_match:
-                data['unique_id'] = full_oc_match.group(1).upper()  # normalize to uppercase
+                raw = full_oc_match.group(1)
+                # Remove any whitespace so that “O C - 24 - 1501 - 4089  00000009” → “OC-24-1501-4089-00000009”
+                cleaned = re.sub(r'\s+', '', raw).upper()
+                data['unique_id'] = cleaned
                 logger.info(f"Extracted complete claim ID (full‐pattern): {data['unique_id']}")
                 return data, detected_provider
 
-            # (2) If that didn’t match, look for “OC-<digits>-<digits>-<digits>” followed (possibly via whitespace/newline) by exactly 8 digits
-            three_plus_eight = re.search(r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+)[^\d]*?(\d{8})', text, re.IGNORECASE)
+            # (2) If that didn’t match, look for the first three groups (“OC-xxx-xxx-xxx”)
+            #     and then exactly eight digits—allowing whitespace between each digit of those eight.
+            three_plus_eight = re.search(
+                r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+)[^\d]*((?:\d[-\s]*){8})',
+                text,
+                re.IGNORECASE
+            )
             if three_plus_eight:
-                # Combine them with a hyphen
-                prefix = three_plus_eight.group(1).upper()
-                suffix = three_plus_eight.group(2)
+                prefix_raw = three_plus_eight.group(1)
+                suffix_raw = three_plus_eight.group(2)
+                # Normalize the prefix to uppercase and ensure single hyphens
+                prefix = re.sub(r'[-\s]+', '-', prefix_raw.strip()).upper()
+                # Remove whitespace from the eight‐digit part (“0 0 0 0 0 0 0 9” → “00000009”)
+                suffix = re.sub(r'\s+', '', suffix_raw)
                 data['unique_id'] = f"{prefix}-{suffix}"
-                logger.info(f"Extracted claim ID (3‐plus‐8 split): {data['unique_id']}")
+                logger.info(f"Extracted claim ID (split‐pattern): {data['unique_id']}")
                 return data, detected_provider
 
-            # (3) Only if neither of the above found an OC-ID, fall back to Claim No / Reference No patterns
+            # (3) Only if neither of those worked do we fall back to Claim No / Reference No…
             claim_patterns = [
                 r'claim\s+no\s*(?:\/|\\|\.)*\s*[:\-]?\s*(\S+)',
                 r'customer\s+reference\s*(?:\/|\\|\.)*\s*[:\-]?\s*(\S+)',
@@ -1479,7 +1495,6 @@ class PDFProcessor:
                 claim_match = re.search(pattern, text, re.IGNORECASE)
                 if claim_match:
                     candidate = claim_match.group(1).strip()
-                    # If we happen to capture “No” or “Gross” here, throw it away immediately
                     if candidate.lower() in ("no", "gross"):
                         logger.info(f"Ignoring invalid fallback ID: {candidate!r}")
                         continue
@@ -1487,7 +1502,7 @@ class PDFProcessor:
                     logger.debug(f"Extracted Bajaj Allianz fallback ID: {data['unique_id']}")
                     break
 
-            # (4) Extract amount & date & TDS as before (no change needed for your patterns)
+            # (4) Extract amount & date & TDS as before…
             amount_patterns = [
                 r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
@@ -1529,6 +1544,7 @@ class PDFProcessor:
                     break
 
             return data, detected_provider
+
 
 
 
