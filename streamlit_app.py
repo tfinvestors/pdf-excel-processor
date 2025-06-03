@@ -18,7 +18,30 @@ import sys
 from io import StringIO
 import platform
 from dotenv import load_dotenv
-from logging_utils import setup_logging
+from logging_utils import setup_logging, get_log_contents
+
+st.set_page_config(
+    page_title="PDF Processing & Excel Update Tool",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Setup logging at the start of your app - IMPROVED VERSION
+if 'logger_initialized' not in st.session_state:
+    logger, log_file = setup_logging("streamlit_pdf_app")
+    st.session_state.logger = logger
+    st.session_state.log_file = log_file
+    st.session_state.logger_initialized = True
+    logger.info("Streamlit application started")
+    logger.info("Logging system initialized successfully")
+else:
+    logger = st.session_state.logger
+    log_file = st.session_state.log_file
+
+# Test logging immediately
+logger.info("TEST LOG - Application running")
+
 
 
 class StreamlitLogger:
@@ -42,27 +65,11 @@ class StreamlitLogger:
         lines = self.log_capture.readlines()
         return lines[-last_n_lines:] if lines else []
 
-# THIS MUST BE THE FIRST STREAMLIT COMMAND
-st.set_page_config(
-    page_title="PDF Processing & Excel Update Tool",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Initialize at the start of your app
-if 'streamlit_logger' not in st.session_state:
-    st.session_state.streamlit_logger = StreamlitLogger()
-    st.session_state.streamlit_logger.setup()
-
-# Setup logging at the start of your app
-logger, log_file = setup_logging("streamlit_pdf_app")
-logger.info("Streamlit application started")
-logger.info("TEST LOG - Application started")
 
 
 
-st.write("Direct test log message written")
+
+
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -242,41 +249,27 @@ def show_login_page():
     """Display the login page."""
     # Add logs view to sidebar
     with st.sidebar:
-        st.write(f"Logs are being written to: {log_file}")
+        st.write(f"Log file: {os.path.basename(log_file)}")
         # Optional: Add a button to view logs
         # Replace the existing log viewing button code in the sidebar
-        if st.button("View Recent Logs"):
-            logs = st.session_state.streamlit_logger.get_logs()
-            if logs:
-                st.code(''.join(logs), language="text")
-            else:
-                st.info("No logs captured in this session")
+        if st.button("View Recent Logs", key="view_logs_main"):
             try:
-                log_path = log_file
-                st.write(f"Attempting to read log file: {log_path}")
-
-                # Check if file exists
-                if not os.path.exists(log_path):
-                    st.error(f"Log file does not exist at: {log_path}")
+                log_contents = get_log_contents(log_file)
+                if log_contents:
+                    st.text_area(
+                        "Recent Logs",
+                        ''.join(log_contents),
+                        height=400,
+                        key="log_display"
+                    )
                 else:
-                    # Check file size
-                    file_size = os.path.getsize(log_path)
-                    st.write(f"Log file exists. Size: {file_size} bytes")
-
-                    if file_size == 0:
-                        st.warning("Log file exists but is empty")
-                    else:
-                        with open(log_path, 'r') as f:
-                            log_content = f.readlines()[-50:]  # Show last 50 lines
-                            if not log_content:
-                                st.warning("No content found in log file (file may be empty)")
-                            else:
-                                st.code(''.join(log_content), language="text")
+                    st.warning("No logs found or log file is empty")
             except Exception as e:
-                st.error(f"Error reading log file: {str(e)}")
-                # Print more detailed exception info
-                import traceback
-                st.code(traceback.format_exc(), language="python")
+                st.error(f"Error displaying logs: {str(e)}")
+
+            # Add a refresh logs button
+        if st.button("Refresh Logs", key="refresh_logs"):
+            st.rerun()
 
     # Use columns for overall page layout
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -539,8 +532,10 @@ def show_main_page():
                         logger.debug(f"Progress update: {current}/{total} ({progress:.2%})")
 
                     def update_status(message):
-                        status_area.text(message)
-                        logger.info(f"Status update: {message}")
+                        # Clean message of problematic characters
+                        safe_message = message.replace('📊', '[TABLE]').replace('❌', '[ERROR]').replace('✅', '[SUCCESS]')
+                        status_area.text(safe_message)
+                        logger.info(f"Status update: {safe_message}")
 
                     # Process the files
                     try:
@@ -679,6 +674,33 @@ def show_change_password_page():
                 logger.info("Admin navigating to user management")
                 st.session_state.current_page = 'admin'
                 st.rerun()
+            with st.expander("Debug Information", expanded=False):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write("**Environment:**")
+                    st.write(f"Platform: {sys.platform}")
+                    st.write(f"Python: {sys.version.split()[0]}")
+                    st.write(f"Encoding: {sys.getdefaultencoding()}")
+                    st.write(f"Stdout encoding: {getattr(sys.stdout, 'encoding', 'unknown')}")
+
+                with col2:
+                    st.write("**Logging:**")
+                    st.write(f"Logger: {logger.name}")
+                    st.write(f"Log level: {logger.level}")
+                    st.write(f"Handlers: {len(logger.handlers)}")
+                    st.write(f"Log file exists: {os.path.exists(log_file)}")
+
+                    if os.path.exists(log_file):
+                        file_size = os.path.getsize(log_file)
+                        st.write(f"Log file size: {file_size} bytes")
+
+                # Test logging
+                if st.button("Test Logging"):
+                    logger.info("Manual test log entry")
+                    logger.warning("Test warning message")
+                    logger.error("Test error message")
+                    st.success("Test logs written - check the logs viewer")
 
         # Logout
         if st.button("Logout"):
