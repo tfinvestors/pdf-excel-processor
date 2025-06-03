@@ -2933,64 +2933,114 @@ class PDFProcessor:
 
     def extract_table_data_from_bajaj(self, text):
         """
-        Extract table data from Bajaj Allianz invoices by scanning each line for
-        “OC-<2 digits>-<4 digits>-<4 digits>-<8 digits>” and then pulling out
-        the numbers on that line. The last numeric token is assumed to be the
-        Net (receipt) Amount; the second‐to‐last is TDS.
+        Extract Bajaj Allianz table rows even if the claim ID is split across two lines.
+        We look for either:
+          1) A single line containing “OC-##-####-####-########”
+          2) A line with “OC-##-####-####” followed immediately by a next line starting with 8 digits.
+        Once we have the full ID, we grab all numbers on that (one- or two-line) chunk.  The last number is the
+        net (receipt) amount; the second-to-last is the TDS.  If there’s a date on the same chunk, we grab it too.
         """
         table_data = []
+        lines = text.splitlines()
+        i = 0
 
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
+        while i < len(lines):
+            line = lines[i].strip()
 
-            # 1) Look for the full claim ID (OC-##-####-####-########) anywhere in this line:
-            claim_match = re.search(
+            # 1) Does this line already contain the full “OC-##-####-####-########”?
+            full_match = re.search(
                 r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4}[-\s]*\d{8})',
                 line,
                 re.IGNORECASE
             )
-            if not claim_match:
+            if full_match:
+                # Normalize (remove spaces)
+                full_id = full_match.group(1).replace(" ", "").strip()
+
+                # Pull out every “number (with optional decimals)” on this line
+                all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
+                if not all_numbers:
+                    i += 1
+                    continue
+
+                receipt_amount = all_numbers[-1]
+                tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
+
+                # Try to find a date like “02/01/2025” or “02-Jan-2025” on the same line
+                date_match = re.search(
+                    r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
+                    line
+                )
+                receipt_date = date_match.group(1) if date_match else None
+
+                row_data = {
+                    'unique_id': full_id,
+                    'receipt_amount': receipt_amount
+                }
+                if tds_amount:
+                    row_data['tds'] = tds_amount
+                    row_data['tds_computed'] = 'No'
+                if receipt_date:
+                    row_data['receipt_date'] = receipt_date
+
+                table_data.append(row_data)
+                i += 1
                 continue
 
-            # If we matched, normalize it (remove spaces):
-            full_id = claim_match.group(1).replace(" ", "").strip()
-
-            # 2) Find all “numbers with optional decimals” on that same line:
-            #    e.g. ['12345', '678.90', '148138']
-            all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
-            if not all_numbers:
-                # No digital tokens: skip
-                continue
-
-            # The last one is almost always the Net (receipt) Amount:
-            receipt_amount = all_numbers[-1]
-
-            # The second‐to‐last (if it exists) is likely the TDS:
-            tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
-
-            # 3) Try to grab a date on the same line (if it’s there):
-            #    This handles both “02/01/2025” and “02-Jan-2025” formats:
-            date_match = re.search(
-                r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
-                line
+            # 2) If not “full” on one line, check for a “prefix” pattern here
+            prefix_match = re.search(
+                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})',
+                line,
+                re.IGNORECASE
             )
-            receipt_date = date_match.group(1) if date_match else None
+            if prefix_match and (i + 1) < len(lines):
+                # Normalize prefix (remove spaces)
+                prefix = prefix_match.group(1).replace(" ", "").strip()
 
-            row_data = {
-                'unique_id': full_id,
-                'receipt_amount': receipt_amount
-            }
+                # Look at the next line to see if it begins with exactly 8 digits
+                next_line = lines[i + 1].strip()
+                suffix_match = re.match(r'^(\d{8})', next_line)
+                if suffix_match:
+                    suffix = suffix_match.group(1)
+                    full_id = f"{prefix}-{suffix}"
 
-            if tds_amount:
-                row_data['tds'] = tds_amount
-                row_data['tds_computed'] = 'No'
+                    # Combine both lines into one chunk for number-extraction
+                    combined = line + " " + next_line
 
-            if receipt_date:
-                row_data['receipt_date'] = receipt_date
+                    # Pull out every “number (with optional decimals)” from that combined chunk
+                    all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', combined)
+                    if not all_numbers:
+                        i += 2
+                        continue
 
-            table_data.append(row_data)
+                    receipt_amount = all_numbers[-1]
+                    tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
+
+                    # Try to find a date anywhere in combined text
+                    date_match = re.search(
+                        r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
+                        combined
+                    )
+                    receipt_date = date_match.group(1) if date_match else None
+
+                    row_data = {
+                        'unique_id': full_id,
+                        'receipt_amount': receipt_amount
+                    }
+                    if tds_amount:
+                        row_data['tds'] = tds_amount
+                        row_data['tds_computed'] = 'No'
+                    if receipt_date:
+                        row_data['receipt_date'] = receipt_date
+
+                    table_data.append(row_data)
+
+                    # Skip over the next line since we've consumed it
+                    i += 2
+                    continue
+
+            # Otherwise, move on
+            i += 1
 
         return table_data
 
