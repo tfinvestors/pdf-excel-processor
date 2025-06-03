@@ -1452,86 +1452,93 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # ── NEW: Try to match “OC-##-####-####-########” all at once ──
-            full_match = re.search(
-                r'(OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})[-\s]*(\d{8}))',
-                text,
-                re.IGNORECASE
-            )
-            if full_match:
-                # full_match.group(1) is the entire ID, e.g. "OC-24-1501-4089-00000009"
-                data['unique_id'] = full_match.group(1).replace(" ", "").strip()
-                logger.info(f"Extracted full Bajaj claim ID: {data['unique_id']}")
+            # 1) First, try to find a two‐line split ID:
+            #    a) current_line has “OC-dd-dddd-dddd” prefix
+            #    b) next_line begins with 8 digits (the “00000009” suffix)
+            lines = text.splitlines()
+            for idx, ln in enumerate(lines):
+                ln_strip = ln.strip()
+                # look for prefix on this line:
+                prefix_match = re.search(r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})', ln_strip, re.IGNORECASE)
+                if prefix_match and (idx + 1) < len(lines):
+                    next_line = lines[idx + 1].strip()
+                    suffix_match = re.match(r'^(\d{8})', next_line)
+                    if suffix_match:
+                        # We have a split ID: build the full ID, then pull numbers from both lines
+                        prefix = prefix_match.group(1).replace(" ", "").strip()
+                        suffix = suffix_match.group(1)
+                        full_id = f"{prefix}-{suffix}"
+                        logger.info(f"Found split‐over‐two‐lines Bajaj ID: {full_id}")
 
+                        # Combine the two lines into one chunk so we can extract “148138” as the final number
+                        combined = ln_strip + " " + next_line
+                        all_nums = re.findall(r'(\d+(?:\.\d{1,2})?)', combined)
+                        if len(all_nums) >= 1:
+                            # Last token is receipt_amount, second‐to‐last is TDS
+                            receipt_amt = all_nums[-1]
+                            tds_amt = all_nums[-2] if len(all_nums) >= 2 else None
+
+                            data['unique_id'] = full_id
+                            data['receipt_amount'] = receipt_amt
+                            if tds_amt:
+                                data['tds'] = tds_amt
+                                data['tds_computed'] = 'No'
+                            # Try to grab a date from the same combined text (e.g. “02-Jan-2025”)
+                            date_m = re.search(r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})', combined)
+                            if date_m:
+                                data['receipt_date'] = date_m.group(1)
+
+                            logger.debug(
+                                f"  → Overwrite from split‐ID chunk: receipt_amount={data['receipt_amount']}, tds={data.get('tds')}, date={data.get('receipt_date')}")
+                        break
             else:
-                # ── FALLBACK: just grab the prefix, as before ──
-                prefix_match = re.search(
-                    r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})',
-                    text,
-                    re.IGNORECASE
-                )
+                # 2) If no two‐line match at all, fall back to the old “single‐line prefix” approach
+                prefix_match = re.search(r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})', text, re.IGNORECASE)
                 if prefix_match:
-                    part1 = prefix_match.group(1)
-                    part2 = prefix_match.group(2)
-                    part3 = prefix_match.group(3)
-                    extracted_prefix = f"OC-{part1}-{part2}-{part3}"
-                    data['unique_id'] = extracted_prefix
-                    logger.info(f"Extracted Bajaj prefix: {data['unique_id']}")
+                    p1, p2, p3 = prefix_match.group(1), prefix_match.group(2), prefix_match.group(3)
+                    data['unique_id'] = f"OC-{p1}-{p2}-{p3}"
+                    logger.info(f"Extracted Bajaj prefix on one line: {data['unique_id']}")
 
-            # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
-            # We keep the same amount‐/date‐/tds‐patterns you already had.
-            amount_patterns = [
-                r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ]
-            for pattern in amount_patterns:
-                m = re.search(pattern, text, re.IGNORECASE)
-                if m:
-                    data['receipt_amount'] = m.group(1).replace(',', '')
-                    logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
-                    break
+                    # Extract amount, date, TDS using same regex as before
+                    for pat in [
+                        r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                        r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                        r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                        r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    ]:
+                        m = re.search(pat, text, re.IGNORECASE)
+                        if m:
+                            data['receipt_amount'] = m.group(1).replace(",", "")
+                            logger.debug(f"Extracted Bajaj Allianz amount (fallback): {data['receipt_amount']}")
+                            break
 
-            date_patterns = [
-                r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',  # e.g. 02-Jan-2025
-                r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
-                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
-                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-            ]
-            for pattern in date_patterns:
-                d = re.search(pattern, text, re.IGNORECASE)
-                if d:
-                    data['receipt_date'] = d.group(1).strip()
-                    logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
-                    break
+                    for pat in [
+                        r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',
+                        r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
+                        r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                        r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                    ]:
+                        d = re.search(pat, text, re.IGNORECASE)
+                        if d:
+                            data['receipt_date'] = d.group(1).strip()
+                            logger.debug(f"Extracted Bajaj Allianz date (fallback): {data['receipt_date']}")
+                            break
 
-            tds_patterns = [
-                r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ]
-            for pattern in tds_patterns:
-                t = re.search(pattern, text, re.IGNORECASE)
-                if t:
-                    data['tds'] = t.group(1).replace(',', '')
-                    data['tds_computed'] = 'No'
-                    logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
-                    break
+                    for pat in [
+                        r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                        r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                        r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    ]:
+                        t = re.search(pat, text, re.IGNORECASE)
+                        if t:
+                            data['tds'] = t.group(1).replace(",", "")
+                            data['tds_computed'] = 'No'
+                            logger.debug(f"Extracted Bajaj Allianz TDS (fallback): {data['tds']}")
+                            break
 
-            table_rows = self.extract_table_data_from_bajaj(text)
-            if table_rows:
-                # We only need the first matching row
-                row = table_rows[0]
-                data['receipt_amount'] = row['receipt_amount']
-                if 'tds' in row:
-                    data['tds'] = row['tds']
-                    data['tds_computed'] = row.get('tds_computed', 'No')
-                if 'receipt_date' in row:
-                    data['receipt_date'] = row['receipt_date']
-
-            # Return _prefix_ now—Excel handler will recover the final “-00000009” for us.
+            # 3) Finally return _after_ trying both split‐over‐two‐lines and single‐line fallback
             return data, detected_provider
+
 
 
 
