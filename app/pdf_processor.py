@@ -1457,7 +1457,7 @@ class PDFProcessor:
                 logger.info("Detected Standard Chartered Bajaj Allianz document")
 
                 # Look for the Generic OC-…-…-… pattern: grab “OC-<digits>-<digits>-<digits>” PLUS eight digits, no matter what non-digit characters come in between.
-                match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text)
+                match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text, re.IGNORECASE)
                 if match:
                     data['unique_id'] = f"{match.group(1)}-{match.group(2)}"
                     logger.info(f"Extracted complete claim ID: {data['unique_id']}")
@@ -1476,7 +1476,7 @@ class PDFProcessor:
                 ]
 
                 for pattern in oc_patterns:
-                    oc_match = re.search(pattern, text)
+                    oc_match = re.search(pattern, text, re.IGNORECASE)
                     if oc_match:
                         if '(' in pattern:
                             data['unique_id'] = oc_match.group(1)
@@ -1963,7 +1963,7 @@ class PDFProcessor:
         # EMERGENCY FIX FOR STANDARD CHARTERED BAJAJ DOCUMENT - AS FIRST LAYER FOR BAJAJ ALLIANZ
         if ("standard" in text.lower() and "chartered" in text.lower()) and "bajaj allianz" in text.lower():
             # One regex to grab “OC-<digits>-<digits>-<digits>” plus 8 digits, regardless of separators
-            match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text)
+            match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text, re.IGNORECASE)
             if match:
                 unique_id = f"{match.group(1)}-{match.group(2)}"
                 logger.info(f"EMERGENCY FIX: Extracted full claim ID: {unique_id}")
