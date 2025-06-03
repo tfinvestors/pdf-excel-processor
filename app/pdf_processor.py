@@ -1477,6 +1477,11 @@ class PDFProcessor:
                 re.IGNORECASE | re.DOTALL
             )
 
+            start = text.lower().find("oc-24-1501-4089")
+            if start >= 0:
+                snippet = text[start: start + 200]  # grab 200 chars starting at “OC-24-1501-4089”
+                logger.info(f"DEBUG_SNIPPET around OC-24-1501-4089:\n{snippet!r}")
+
             m = two_line_pattern.search(text)
             if m:
                 # We got a match spanning both “lines”
