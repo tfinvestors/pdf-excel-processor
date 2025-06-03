@@ -1453,14 +1453,14 @@ class PDFProcessor:
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
             # (1) Try to capture the full “OC-<digits>-<digits>-<digits>-<8 digits>” in one shot, case‐insensitive
-            full_oc_match = re.search(r'(OC-\d+-\d+-\d+-\d{8})', text, re.IGNORECASE)
+            full_oc_match = re.search(r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+[-\s]*\d{8})', text, re.IGNORECASE)
             if full_oc_match:
                 data['unique_id'] = full_oc_match.group(1).upper()  # normalize to uppercase
                 logger.info(f"Extracted complete claim ID (full‐pattern): {data['unique_id']}")
                 return data, detected_provider
 
             # (2) If that didn’t match, look for “OC-<digits>-<digits>-<digits>” followed (possibly via whitespace/newline) by exactly 8 digits
-            three_plus_eight = re.search(r'(OC-\d+-\d+-\d+)[^\d]*?(\d{8})', text, re.IGNORECASE)
+            three_plus_eight = re.search(r'(OC[-\s]*\d+[-\s]*\d+[-\s]*\d+)[^\d]*?(\d{8})', text, re.IGNORECASE)
             if three_plus_eight:
                 # Combine them with a hyphen
                 prefix = three_plus_eight.group(1).upper()
