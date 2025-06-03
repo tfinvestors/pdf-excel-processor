@@ -1461,6 +1461,11 @@ class PDFProcessor:
                 if match:
                     data['unique_id'] = f"{match.group(1)}-{match.group(2)}"
                     logger.info(f"Extracted complete claim ID: {data['unique_id']}")
+                # If that regex somehow captures literal "No", drop it:
+
+                if 'unique_id' in data and str(data['unique_id']).strip().lower() == "no":
+                    del data['unique_id']
+                    logger.info("extract_bank_specific_data(): dropped invalid unique_id='No'")
 
             # APPROACH 2: More general OC pattern matching if unique_id not yet found
             if 'unique_id' not in data or not data['unique_id']:
@@ -1888,6 +1893,10 @@ class PDFProcessor:
                 if 'unique_id' in bank_data and bank_data['unique_id']:
                     unique_id = bank_data['unique_id']
                     logger.info(f"Found unique ID from bank-specific extraction: {unique_id}")
+                    # If we literally captured "No" (e.g. from "Claim No"), drop it now:
+                    if unique_id.strip().lower() == "no":
+                        unique_id = None
+                        logger.info("Discarding invalid unique_id='No' from bank-specific extraction")
 
                 # Copy extracted fields to data_points
                 for key, value in bank_data.items():
