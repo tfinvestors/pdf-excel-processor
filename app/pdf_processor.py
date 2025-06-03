@@ -1452,103 +1452,85 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # APPROACH 1: Standard Chartered specific fix
-            if "standard" in text.lower() and "chartered" in text.lower():
-                logger.info("Detected Standard Chartered Bajaj Allianz document")
+            # (1) Try to capture the full “OC-<digits>-<digits>-<digits>-<8 digits>” in one shot, case‐insensitive
+            full_oc_match = re.search(r'(OC-\d+-\d+-\d+-\d{8})', text, re.IGNORECASE)
+            if full_oc_match:
+                data['unique_id'] = full_oc_match.group(1).upper()  # normalize to uppercase
+                logger.info(f"Extracted complete claim ID (full‐pattern): {data['unique_id']}")
+                return data, detected_provider
 
-                # Look for the Generic OC-…-…-… pattern: grab “OC-<digits>-<digits>-<digits>” PLUS eight digits, no matter what non-digit characters come in between.
-                match = re.search(r'(OC-\d+-\d+-\d+)\D+(\d{8})', text, re.IGNORECASE)
-                if match:
-                    data['unique_id'] = f"{match.group(1)}-{match.group(2)}"
-                    logger.info(f"Extracted complete claim ID: {data['unique_id']}")
-                # If that regex somehow captures literal "No", drop it:
+            # (2) If that didn’t match, look for “OC-<digits>-<digits>-<digits>” followed (possibly via whitespace/newline) by exactly 8 digits
+            three_plus_eight = re.search(r'(OC-\d+-\d+-\d+)[^\d]*?(\d{8})', text, re.IGNORECASE)
+            if three_plus_eight:
+                # Combine them with a hyphen
+                prefix = three_plus_eight.group(1).upper()
+                suffix = three_plus_eight.group(2)
+                data['unique_id'] = f"{prefix}-{suffix}"
+                logger.info(f"Extracted claim ID (3‐plus‐8 split): {data['unique_id']}")
+                return data, detected_provider
 
-                if 'unique_id' in data and str(data['unique_id']).strip().lower() == "no":
-                    del data['unique_id']
-                    logger.info("extract_bank_specific_data(): dropped invalid unique_id='No'")
+            # (3) Only if neither of the above found an OC-ID, fall back to Claim No / Reference No patterns
+            claim_patterns = [
+                r'claim\s+no\s*(?:\/|\\|\.)*\s*[:\-]?\s*(\S+)',
+                r'customer\s+reference\s*(?:\/|\\|\.)*\s*[:\-]?\s*(\S+)',
+                r'settlement\s+reference\s*[:\-]?\s*(\S+)',
+            ]
+            for pattern in claim_patterns:
+                claim_match = re.search(pattern, text, re.IGNORECASE)
+                if claim_match:
+                    candidate = claim_match.group(1).strip()
+                    # If we happen to capture “No” or “Gross” here, throw it away immediately
+                    if candidate.lower() in ("no", "gross"):
+                        logger.info(f"Ignoring invalid fallback ID: {candidate!r}")
+                        continue
+                    data['unique_id'] = candidate
+                    logger.debug(f"Extracted Bajaj Allianz fallback ID: {data['unique_id']}")
+                    break
 
-            # APPROACH 2: More general OC pattern matching if unique_id not yet found
-            if 'unique_id' not in data or not data['unique_id']:
-                # Look directly for the OC format claim number pattern in the full text
-                oc_patterns = [
-                    r'(OC-\d+-\d+-\d+-\d+)',  # Complete pattern
-                    r'OC-\d+-\d+-\d+[-\s\n]*\d{8}',  # Split pattern
-                ]
-
-                for pattern in oc_patterns:
-                    oc_match = re.search(pattern, text, re.IGNORECASE)
-                    if oc_match:
-                        if '(' in pattern:
-                            data['unique_id'] = oc_match.group(1)
-                        else:
-                            # For split pattern, extract and combine
-                            match_text = oc_match.group(0)
-                            # Clean up and normalize
-                            data['unique_id'] = re.sub(r'[\s\n]+', '-', match_text)
-
-                        logger.debug(f"Extracted Bajaj Allianz claim number: {data['unique_id']}")
-                        break
-
-            # APPROACH 3: Fall back to original patterns if still no unique_id
-            if 'unique_id' not in data or not data['unique_id']:
-                claim_patterns = [
-                    r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                    r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
-                    r'settlement\s+reference\s*:\s*(\S+)',
-                ]
-
-                for pattern in claim_patterns:
-                    claim_match = re.search(pattern, text, re.IGNORECASE)
-                    if claim_match:
-                        data['unique_id'] = claim_match.group(1).strip()
-                        logger.debug(f"Extracted Bajaj Allianz claim number: {data['unique_id']}")
-                        break
-
-            # Extract amount with enhanced patterns
+            # (4) Extract amount & date & TDS as before (no change needed for your patterns)
             amount_patterns = [
                 r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
             ]
-
             for pattern in amount_patterns:
-                amount_match = re.search(pattern, text, re.IGNORECASE)
-                if amount_match:
-                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                m = re.search(pattern, text, re.IGNORECASE)
+                if m:
+                    data['receipt_amount'] = m.group(1).replace(',', '')
                     logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
                     break
 
-            # Extract date with enhanced patterns for multiple formats
             date_patterns = [
-                r'value\s+date\s*[»:]\s*(\d{2}-[a-zA-Z]{3}-\d{4})',  # Format: 02-Jan-2025
-                r'advice\s+date\s*:?\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
+                r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',  # e.g. 02-Jan-2025
+                r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
                 r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
                 r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-                r'(\d{2}/\d{2}/\d{2,4})\s+\d+\s+OC-',  # Date near OC claim number
+                r'(\d{2}/\d{2}/\d{2,4})\s+\d+\s+OC-',  # date near OC
             ]
-
             for pattern in date_patterns:
-                date_match = re.search(pattern, text, re.IGNORECASE)
-                if date_match:
-                    data['receipt_date'] = date_match.group(1).strip()
+                d = re.search(pattern, text, re.IGNORECASE)
+                if d:
+                    data['receipt_date'] = d.group(1).strip()
                     logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
                     break
 
-            # Extract TDS from table if available
             tds_patterns = [
                 r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
                 r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
             ]
-
             for pattern in tds_patterns:
-                tds_match = re.search(pattern, text, re.IGNORECASE)
-                if tds_match:
-                    data['tds'] = tds_match.group(1).strip().replace(',', '')
+                t = re.search(pattern, text, re.IGNORECASE)
+                if t:
+                    data['tds'] = t.group(1).replace(',', '')
                     data['tds_computed'] = 'No'
                     logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
                     break
+
+            return data, detected_provider
+
+
 
         elif detected_provider == "rgcargo":
             logger.debug("Extracting data using RG Cargo patterns")
