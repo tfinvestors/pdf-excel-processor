@@ -1519,6 +1519,17 @@ class PDFProcessor:
                     logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
                     break
 
+            table_rows = self.extract_table_data_from_bajaj(text)
+            if table_rows:
+                # use the first table‐row’s 'receipt_amount' (148138)
+                row = table_rows[0]
+                data['receipt_amount'] = row['receipt_amount']
+                if 'tds' in row:
+                    data['tds'] = row['tds']
+                    data['tds_computed'] = row.get('tds_computed', 'No')
+                if 'receipt_date' in row:
+                    data['receipt_date'] = row['receipt_date']
+
             # Return _prefix_ now—Excel handler will recover the final “-00000009” for us.
             return data, detected_provider
 
