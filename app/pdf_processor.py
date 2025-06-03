@@ -1521,7 +1521,7 @@ class PDFProcessor:
 
             table_rows = self.extract_table_data_from_bajaj(text)
             if table_rows:
-                # use the first table‐row’s 'receipt_amount' (148138)
+                # We only need the first matching row
                 row = table_rows[0]
                 data['receipt_amount'] = row['receipt_amount']
                 if 'tds' in row:
@@ -2933,76 +2933,64 @@ class PDFProcessor:
 
     def extract_table_data_from_bajaj(self, text):
         """
-        Extract table data specifically from Bajaj Allianz format PDFs where data might be split across lines.
-
-        Args:
-            text (str): Extracted PDF text
-
-        Returns:
-            list: List of dictionaries containing extracted table data
+        Extract table data from Bajaj Allianz invoices by scanning each line for
+        “OC-<2 digits>-<4 digits>-<4 digits>-<8 digits>” and then pulling out
+        the numbers on that line. The last numeric token is assumed to be the
+        Net (receipt) Amount; the second‐to‐last is TDS.
         """
         table_data = []
 
-        # Look for the table pattern specific to Bajaj Allianz advices
-        table_pattern = r'(?:Appr|Ref)\s+Date\s+Description\s+Claim\s+No\s+Gross\s+(?:Amt|Amount)\s+(?:Ser\s+Tax|Service\s+Tax)\s+TDS\s+(?:Amt|Amount)\s+Amount\s+\(INR\)'
-        table_match = re.search(table_pattern, text, re.IGNORECASE)
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
 
-        if table_match:
-            # Extract the content after the table header
-            table_content = text[table_match.end():]
+            # 1) Look for the full claim ID (OC-##-####-####-########) anywhere in this line:
+            claim_match = re.search(
+                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4}[-\s]*\d{8})',
+                line,
+                re.IGNORECASE
+            )
+            if not claim_match:
+                continue
 
-            # Find the end of the table content
-            end_markers = ["Note:", "----", "This is a system"]
-            for marker in end_markers:
-                end_pos = table_content.find(marker)
-                if end_pos > 0:
-                    table_content = table_content[:end_pos].strip()
-                    break
+            # If we matched, normalize it (remove spaces):
+            full_id = claim_match.group(1).replace(" ", "").strip()
 
-            # Split the content into lines
-            lines = table_content.strip().split('\n')
+            # 2) Find all “numbers with optional decimals” on that same line:
+            #    e.g. ['12345', '678.90', '148138']
+            all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
+            if not all_numbers:
+                # No digital tokens: skip
+                continue
 
-            # Process rows by combining lines if needed
-            i = 0
-            while i < len(lines):
-                line = lines[i].strip()
+            # The last one is almost always the Net (receipt) Amount:
+            receipt_amount = all_numbers[-1]
 
-                # Skip empty lines
-                if not line:
-                    i += 1
-                    continue
+            # The second‐to‐last (if it exists) is likely the TDS:
+            tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
 
-                claim_match = re.search(r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4}[-\s]*\d{8})', line, re.IGNORECASE)
-                if claim_match:
-                    full_id = claim_match.group(1).replace(" ", "")
-                    # Now grab all decimal/whole numbers in that same line: [gross, service tax, TDS, net]
-                    numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
-                    # We expect something like: [ref, date, gross, ser_tax, tds, net] or [ref, date, gross, tds, net]
-                    # So net amount should be the last number in the list.
-                    if len(numbers) >= 1:
-                        receipt_amount = numbers[-1]  # last captured number is Net Amount
-                        # TDS is typically second-to-last
-                        tds_amount = numbers[-2] if len(numbers) >= 2 else None
-                    else:
-                        receipt_amount = None
-                        tds_amount = None
+            # 3) Try to grab a date on the same line (if it’s there):
+            #    This handles both “02/01/2025” and “02-Jan-2025” formats:
+            date_match = re.search(
+                r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
+                line
+            )
+            receipt_date = date_match.group(1) if date_match else None
 
-                    row_data = {'unique_id': full_id}
-                    if receipt_amount:
-                        row_data['receipt_amount'] = receipt_amount
-                    if tds_amount:
-                        row_data['tds'] = tds_amount
-                        row_data['tds_computed'] = 'No'
+            row_data = {
+                'unique_id': full_id,
+                'receipt_amount': receipt_amount
+            }
 
-                    # If there’s a date somewhere in the same line, pick it up (e.g. “02/01/2025” or “02-Jan-2025”)
-                    date_match = re.search(r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})', line)
-                    if date_match:
-                        row_data['receipt_date'] = date_match.group(1)
+            if tds_amount:
+                row_data['tds'] = tds_amount
+                row_data['tds_computed'] = 'No'
 
-                    table_data.append(row_data)
-                    i += 1
-                else:
-                    i += 1
+            if receipt_date:
+                row_data['receipt_date'] = receipt_date
+
+            table_data.append(row_data)
 
         return table_data
 
