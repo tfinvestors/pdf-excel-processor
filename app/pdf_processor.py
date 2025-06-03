@@ -1452,22 +1452,31 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # STEP 1: Just find the “OC-<2>-<4>-<4>” prefix (ignore whatever happens to the final 8 digits).
-            # We allow hyphens or whitespace between the groups.
-            prefix_match = re.search(
-                r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})',
+            # ── NEW: Try to match “OC-##-####-####-########” all at once ──
+            full_match = re.search(
+                r'(OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})[-\s]*(\d{8}))',
                 text,
                 re.IGNORECASE
             )
-            if prefix_match:
-                # Normalize to exactly “OC-24-1501-4089”
-                part1 = prefix_match.group(1)
-                part2 = prefix_match.group(2)
-                part3 = prefix_match.group(3)
-                extracted_prefix = f"OC-{part1}-{part2}-{part3}"
-                data['unique_id'] = extracted_prefix
-                logger.info(f"Extracted Bajaj prefix: {data['unique_id']}")
-                # Do NOT return just yet—let the Excel handler look up the full 8‐digit suffix.
+            if full_match:
+                # full_match.group(1) is the entire ID, e.g. "OC-24-1501-4089-00000009"
+                data['unique_id'] = full_match.group(1).replace(" ", "").strip()
+                logger.info(f"Extracted full Bajaj claim ID: {data['unique_id']}")
+
+            else:
+                # ── FALLBACK: just grab the prefix, as before ──
+                prefix_match = re.search(
+                    r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})',
+                    text,
+                    re.IGNORECASE
+                )
+                if prefix_match:
+                    part1 = prefix_match.group(1)
+                    part2 = prefix_match.group(2)
+                    part3 = prefix_match.group(3)
+                    extracted_prefix = f"OC-{part1}-{part2}-{part3}"
+                    data['unique_id'] = extracted_prefix
+                    logger.info(f"Extracted Bajaj prefix: {data['unique_id']}")
 
             # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
             # We keep the same amount‐/date‐/tds‐patterns you already had.
