@@ -1452,119 +1452,142 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # APPROACH 1: Standard Chartered specific fix
-            if "standard @ chartered" in text.lower() or "standard chartered" in text.lower():
-                # Check for table row with specific format
-                table_row_pattern = r'(\d{4}\s+\d{2}/\d{2}/\d{2,4}\s+\d+\s+OC-\d+-\d+-\d+[-\s]*\n\s*\d{8})'
-                table_match = re.search(table_row_pattern, text, re.DOTALL)
+            # ENHANCED APPROACH 1: Handle split claim numbers more robustly
+            # Look for the base OC pattern first
+            base_claim_pattern = r'(OC-\d+-\d+-\d+)'
+            base_match = re.search(base_claim_pattern, text)
 
-                if table_match:
-                    # Get the table row content
-                    table_row = table_match.group(0)
+            if base_match:
+                base_claim = base_match.group(1)
+                logger.debug(f"Found base claim pattern: {base_claim}")
 
-                    # First extract the OC base pattern
-                    base_match = re.search(r'(OC-\d+-\d+-\d+)', table_row)
-                    if base_match:
-                        base_id = base_match.group(1)
+                # Now look for the continuation number within the next 200 characters
+                base_pos = base_match.end()
+                search_text = text[base_pos:base_pos + 200]
 
-                        # Then look for the 8-digit continuation on the next line
-                        cont_match = re.search(r'\n\s*(\d{8})', table_row)
-                        if cont_match:
-                            continuation = cont_match.group(1)
-                            data['unique_id'] = f"{base_id}-{continuation}"
-                            logger.info(f"DIRECT FIX: Extracted Bajaj claim ID: {data['unique_id']}")
-
-            # APPROACH 2: More general OC pattern matching if unique_id not yet found
-            if 'unique_id' not in data:
-                # Look directly for the OC format claim number pattern in the full text
-                oc_pattern = r'OC-\d+-\d+-\d+-\d+|OC-\d+-\d+-\d+[-\s\n]*\d{8}'  # Specifically match 8-digit continuation
-                oc_match = re.search(oc_pattern, text)
-
-                if oc_match:
-                    # Clean up any spaces or newlines in the matched pattern
-                    claim_raw = oc_match.group(0)
-                    data['unique_id'] = re.sub(r'[\s\n]+', '-', claim_raw)
-                    logger.debug(f"Extracted Bajaj Allianz claim number using OC pattern: {data['unique_id']}")
-                else:
-                    # Try more specific pattern to capture the exact structure from the table row
-                    table_pattern = r'OC-\d+-\d+-\d+.*?\n.*?(\d{8})'
-                    table_match = re.search(table_pattern, text, re.DOTALL)
-
-                    if table_match:
-                        # Extract the base OC pattern
-                        base_match = re.search(r'(OC-\d+-\d+-\d+)', text)
-                        if base_match:
-                            # Build the complete ID from parts
-                            data['unique_id'] = f"{base_match.group(1)}-{table_match.group(1)}"
-                            logger.info(f"Table-based extraction for Bajaj claim ID: {data['unique_id']}")
-
-            # APPROACH 3: Fall back to original patterns if still no unique_id
-            if 'unique_id' not in data:
-                claim_patterns = [
-                    r'claim\s+no\s*(?:\/|\\|\.)*\s*(\S+)',
-                    r'oc-\d+-\d+-\d+-\d+',  # Full OC pattern
-                    r'(oc-\d+-\d+-\d+(?:-\d+)?)',  # OC pattern that may or may not have the last segment
-                    r'customer\s+reference\s*(?:\/|\\|\.)*\s*:\s*(\S+)',
-                    r'settlement\s+reference\s*:\s*(\S+)',
+                # Look for 8-digit continuation number
+                continuation_patterns = [
+                    r'[-\s\n]*(\d{8})',  # With optional separators
+                    r'\n\s*(\d{8})',  # On new line
+                    r'-(\d{8})',  # With dash
                 ]
 
-                for pattern in claim_patterns:
-                    claim_match = re.search(pattern, text, re.IGNORECASE)
-                    if claim_match:
-                        if '(' in pattern:  # Pattern has a capture group
-                            data['unique_id'] = claim_match.group(1).strip()
-                        else:
-                            data['unique_id'] = claim_match.group(0).strip()
-                        logger.debug(f"Extracted Bajaj Allianz claim number: {data['unique_id']}")
+                for pattern in continuation_patterns:
+                    cont_match = re.search(pattern, search_text)
+                    if cont_match:
+                        continuation = cont_match.group(1)
+                        data['unique_id'] = f"{base_claim}-{continuation}"
+                        logger.info(f"Successfully reconstructed claim ID: {data['unique_id']}")
                         break
 
-            # Extract amount with enhanced patterns
-            amount_patterns = [
-                r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                # Look for amount in table near end of document
-                r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ]
+                # If no continuation found, use base claim
+                if 'unique_id' not in data:
+                    data['unique_id'] = base_claim
+                    logger.warning(f"Using incomplete claim ID: {base_claim}")
 
-            for pattern in amount_patterns:
-                amount_match = re.search(pattern, text, re.IGNORECASE)
-                if amount_match:
-                    data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
-                    logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
-                    break
+            # APPROACH 2: Try to find complete claim number in one go
+            if 'unique_id' not in data:
+                complete_patterns = [
+                    r'(OC-\d+-\d+-\d+-\d{8})',  # Complete pattern
+                    r'Claim\s+No[:\s]*(OC-\d+-\d+-\d+[-\s]*\d{8})',  # With label
+                ]
+
+                for pattern in complete_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        # Clean up any whitespace/newlines in the match
+                        claim_id = re.sub(r'[\s\n]+', '-', match.group(1))
+                        data['unique_id'] = claim_id
+                        logger.info(f"Found complete claim ID: {claim_id}")
+                        break
+
+            # APPROACH 3: Extract from table structure specifically
+            if 'unique_id' not in data:
+                # Look for table row with claim number
+                table_pattern = r'(\d{4})\s+(\d{2}/\d{2}/\d{2,4})\s+(\d+)\s+(OC-\d+-\d+-\d+)[-\s\n]*(\d{8})'
+                table_match = re.search(table_pattern, text, re.DOTALL)
+
+                if table_match:
+                    appr_no, date, desc, base_claim, continuation = table_match.groups()
+                    data['unique_id'] = f"{base_claim}-{continuation}"
+                    logger.info(f"Extracted from table structure: {data['unique_id']}")
+
+                    # Also extract other data while we're here
+                    data['receipt_date'] = date
+                    if 'receipt_amount' not in data:
+                        # Look for amount in the same table row
+                        amount_pattern = r'(\d{6})\s*$'
+                        amount_match = re.search(amount_pattern, text[table_match.start():table_match.end() + 50])
+                        if amount_match:
+                            data['receipt_amount'] = amount_match.group(1)
+
+            # Extract amount with enhanced patterns
+            if 'receipt_amount' not in data:
+                amount_patterns = [
+                    r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'Amount\s*\(INR\)\s*(\d+)',  # Specific to this document format
+                    r'(\d{6})\s*$',  # 6-digit amount at end of line (like 148138)
+                ]
+
+                for pattern in amount_patterns:
+                    amount_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+                    if amount_match:
+                        data['receipt_amount'] = amount_match.group(1).strip().replace(',', '')
+                        logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
+                        break
 
             # Extract date with enhanced patterns for multiple formats
-            date_patterns = [
-                r'value\s+date\s*[»:]\s*(\d{2}-[a-zA-Z]{3}-\d{4})',  # Format: 02-Jan-2025
-                r'advice\s+date\s*:?\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
-                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
-                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-                # Look for date in table
-                r'(\d{2}/\d{2}/\d{2,4})\s+\d+\s+OC-',  # Date near OC claim number
-            ]
+            if 'receipt_date' not in data:
+                date_patterns = [
+                    r'value\s+date\s*[»:]\s*(\d{2}-[a-zA-Z]{3}-\d{4})',  # Format: 02-Jan-2025
+                    r'advice\s+date\s*:?\s*(\d{2}-[a-zA-Z]{3}-\d{4})',
+                    r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                    r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+                    r'(\d{2}/\d{2}/\d{2,4})\s+\d+\s+OC-',  # Date near OC claim number
+                    r'Date\s*(\d{2}/\d{2}/\d{2})',  # Short date format like in table
+                ]
 
-            for pattern in date_patterns:
-                date_match = re.search(pattern, text, re.IGNORECASE)
-                if date_match:
-                    data['receipt_date'] = date_match.group(1).strip()
-                    logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
-                    break
+                for pattern in date_patterns:
+                    date_match = re.search(pattern, text, re.IGNORECASE)
+                    if date_match:
+                        date_str = date_match.group(1).strip()
+                        # Convert short year to full year if needed
+                        if len(date_str.split('/')[-1]) == 2:
+                            parts = date_str.split('/')
+                            if len(parts) == 3:
+                                year = int(parts[2])
+                                if year < 50:
+                                    year += 2000
+                                else:
+                                    year += 1900
+                                date_str = f"{parts[0]}/{parts[1]}/{year}"
+
+                        data['receipt_date'] = date_str
+                        logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
+                        break
 
             # Extract TDS from table if available
-            tds_patterns = [
-                r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-            ]
+            if 'tds' not in data:
+                tds_patterns = [
+                    r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                    r'(\d{5})\s+(\d{6})',  # Pattern like "16460    148138" where first is TDS
+                ]
 
-            for pattern in tds_patterns:
-                tds_match = re.search(pattern, text, re.IGNORECASE)
-                if tds_match:
-                    data['tds'] = tds_match.group(1).strip().replace(',', '')
-                    data['tds_computed'] = 'No'
-                    logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
-                    break
+                for pattern in tds_patterns:
+                    tds_match = re.search(pattern, text, re.IGNORECASE)
+                    if tds_match:
+                        if len(tds_match.groups()) == 2:
+                            # Pattern with two groups - first is TDS
+                            data['tds'] = tds_match.group(1).strip().replace(',', '')
+                        else:
+                            data['tds'] = tds_match.group(1).strip().replace(',', '')
+                        data['tds_computed'] = 'No'
+                        logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
+                        break
 
         elif detected_provider == "rgcargo":
             logger.debug("Extracting data using RG Cargo patterns")
