@@ -1481,24 +1481,24 @@ class PDFProcessor:
             # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
             # We keep the same amount‐/date‐/tds‐patterns you already had.
             table_start = re.search(r'Amount\s*\(INR\)\s*\n', text)
-            if table_start:
-                # Get the content after headers
-                table_content = text[table_start.end():]
-
-                # Extract the first data row
-                first_row_match = re.match(r'([^\n]+)', table_content.strip())
-                if first_row_match:
-                    first_row = first_row_match.group(1)
-
-                    # Extract ALL numbers from this row
-                    all_numbers = re.findall(r'\b(\d+)\b', first_row)
-
-                    if all_numbers and len(all_numbers) >= 4:
-                        # The LAST number should be Amount (INR)
-                        data['receipt_amount'] = all_numbers[-1]
-                        logger.debug(f"Extracted Bajaj Allianz amount (last column): {data['receipt_amount']}")
-                    else:
-                        logger.warning(f"Could not find enough numbers in table row. Found: {all_numbers}")
+            # if table_start:
+            #     # Get the content after headers
+            #     table_content = text[table_start.end():]
+            #
+            #     # Extract the first data row
+            #     first_row_match = re.match(r'([^\n]+)', table_content.strip())
+            #     if first_row_match:
+            #         first_row = first_row_match.group(1)
+            #
+            #         # Extract ALL numbers from this row
+            #         all_numbers = re.findall(r'\b(\d+)\b', first_row)
+            #
+            #         if all_numbers and len(all_numbers) >= 4:
+            #             # The LAST number should be Amount (INR)
+            #             data['receipt_amount'] = all_numbers[-1]
+            #             logger.debug(f"Extracted Bajaj Allianz amount (last column): {data['receipt_amount']}")
+            #         else:
+            #             logger.warning(f"Could not find enough numbers in table row. Found: {all_numbers}")
 
             # If table extraction didn't work, fall back to other patterns
             if 'receipt_amount' not in data:
