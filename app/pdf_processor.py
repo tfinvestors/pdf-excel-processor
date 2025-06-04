@@ -1480,31 +1480,33 @@ class PDFProcessor:
 
             # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
             # We keep the same amount‐/date‐/tds‐patterns you already had.
-            table_row_pattern = r'(\d+)\s+(\d{1,2}/\d{1,2}/\d{1,2})\s+(\d+)\s+(OC-[\d-]+)[\s\n]*(\d+)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
-            table_match = re.search(table_row_pattern, text, re.MULTILINE | re.DOTALL)
+            table_start = re.search(r'Amount\s*\(INR\)\s*\n', text)
+            if table_start:
+                # Get the content after headers
+                table_content = text[table_start.end():]
 
-            if table_match:
-                # Extract from the correct position (9th group is the Amount INR)
-                data['receipt_amount'] = table_match.group(9)
-                logger.debug(f"Extracted Bajaj Allianz amount from table: {data['receipt_amount']}")
-            else:
-                # Alternative: Look for Amount (INR) header and get the value below it
-                amount_header_pattern = r'Amount\s*\(INR\)\s*\n(?:[^\n]*\n)*.*?(\d{6,})'
-                header_match = re.search(amount_header_pattern, text, re.MULTILINE | re.DOTALL)
+                # Extract the first data row
+                first_row_match = re.match(r'([^\n]+)', table_content.strip())
+                if first_row_match:
+                    first_row = first_row_match.group(1)
 
-                if header_match:
-                    data['receipt_amount'] = header_match.group(1)
-                    logger.debug(f"Extracted Bajaj Allianz amount using header pattern: {data['receipt_amount']}")
-                else:
-                    # Last resort: Look for the largest number in the document (usually the net amount)
-                    all_numbers = re.findall(r'\b(\d{6,})\b', text)
-                    if all_numbers:
-                        # Sort numbers and take the one that looks like 148138
-                        for num in sorted(all_numbers, reverse=True):
-                            if len(num) == 6:  # 148138 has 6 digits
-                                data['receipt_amount'] = num
-                                logger.debug(f"Extracted Bajaj Allianz amount using largest number: {num}")
-                                break
+                    # Extract ALL numbers from this row
+                    all_numbers = re.findall(r'\b(\d+)\b', first_row)
+
+                    if all_numbers and len(all_numbers) >= 4:
+                        # The LAST number should be Amount (INR)
+                        data['receipt_amount'] = all_numbers[-1]
+                        logger.debug(f"Extracted Bajaj Allianz amount (last column): {data['receipt_amount']}")
+                    else:
+                        logger.warning(f"Could not find enough numbers in table row. Found: {all_numbers}")
+
+            # If table extraction didn't work, fall back to other patterns
+            if 'receipt_amount' not in data:
+                # Look for REMITTANCE AMOUNT which should equal Amount (INR)
+                remittance_match = re.search(r'REMITTANCE\s+AMOUNT\s*:\s*(\d+(?:\.\d+)?)', text)
+                if remittance_match:
+                    data['receipt_amount'] = remittance_match.group(1)
+                    logger.debug(f"Extracted amount from REMITTANCE AMOUNT: {data['receipt_amount']}")
 
             date_patterns = [
                 r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',  # e.g. 02-Jan-2025
