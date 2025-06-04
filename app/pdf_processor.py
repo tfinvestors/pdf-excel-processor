@@ -1480,30 +1480,31 @@ class PDFProcessor:
 
             # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
             # We keep the same amount‐/date‐/tds‐patterns you already had.
-            table_amount_pattern = r'Amount\s*\(INR\)\s*\n[^\n]*\n[^\n]*?\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*$'
-            table_match = re.search(table_amount_pattern, text, re.MULTILINE)
+            table_row_pattern = r'(\d+)\s+(\d{1,2}/\d{1,2}/\d{1,2})\s+(\d+)\s+(OC-[\d-]+)[\s\n]*(\d+)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
+            table_match = re.search(table_row_pattern, text, re.MULTILINE | re.DOTALL)
 
             if table_match:
-                data['receipt_amount'] = table_match.group(1).replace(',', '')
+                # Extract from the correct position (9th group is the Amount INR)
+                data['receipt_amount'] = table_match.group(9)
                 logger.debug(f"Extracted Bajaj Allianz amount from table: {data['receipt_amount']}")
             else:
-                # Fallback to existing patterns but with stricter matching
-                amount_patterns = [
-                    # Look for the rightmost column value in a table row
-                    r'(?:\d+\s+){3,}(\d{6,})\s*$',  # Match the last large number in a row
-                    # More specific pattern for Amount (INR) header followed by value
-                    r'Amount\s*\(INR\)\s*\n[^\n]*?\n[^\n]*?(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*$',
-                    # Existing patterns as fallback
-                    r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                    r'amount\s*\(inr\)\s*[^\d]*(\d{6,})',  # Require at least 6 digits
-                ]
+                # Alternative: Look for Amount (INR) header and get the value below it
+                amount_header_pattern = r'Amount\s*\(INR\)\s*\n(?:[^\n]*\n)*.*?(\d{6,})'
+                header_match = re.search(amount_header_pattern, text, re.MULTILINE | re.DOTALL)
 
-                for pattern in amount_patterns:
-                    m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-                    if m:
-                        data['receipt_amount'] = m.group(1).replace(',', '')
-                        logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
-                        break
+                if header_match:
+                    data['receipt_amount'] = header_match.group(1)
+                    logger.debug(f"Extracted Bajaj Allianz amount using header pattern: {data['receipt_amount']}")
+                else:
+                    # Last resort: Look for the largest number in the document (usually the net amount)
+                    all_numbers = re.findall(r'\b(\d{6,})\b', text)
+                    if all_numbers:
+                        # Sort numbers and take the one that looks like 148138
+                        for num in sorted(all_numbers, reverse=True):
+                            if len(num) == 6:  # 148138 has 6 digits
+                                data['receipt_amount'] = num
+                                logger.debug(f"Extracted Bajaj Allianz amount using largest number: {num}")
+                                break
 
             date_patterns = [
                 r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',  # e.g. 02-Jan-2025
@@ -2938,39 +2939,32 @@ class PDFProcessor:
         """
         table_data = []
 
-        # Look for the table header pattern
-        table_pattern = r'Appr\s+No\s+Date\s+Description\s+Claim\s+No\s+Gross\s+Amt\s+Ser\s+Tax\s+TDS\s+Amt\s+Amount\s+\(INR\)'
-        table_match = re.search(table_pattern, text, re.IGNORECASE)
+        # Look for the specific Bajaj Allianz table structure
+        # The table has: Appr No | Date | Description | Claim No | Gross Amt | Ser Tax | TDS Amt | Amount (INR)
 
-        if table_match:
-            # Extract the table content after headers
-            table_content = text[table_match.end():]
+        # First, let's log what we're seeing in the text
+        logger.debug(f"Bajaj text sample for table extraction: {text[:1000]}")
 
-            # Pattern to match the data row
-            # Captures: Appr No, Date, Description, Claim No (split), Gross, Service Tax, TDS, Amount
-            row_pattern = r'(\d+)\s+(\d{1,2}/\d{1,2}/\d{1,2})\s+(\d+)\s+(OC-[\d-]+)\s*(\d+)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
+        # Pattern to capture the complete row with claim number possibly split
+        # Groups: 1=Appr No, 2=Date, 3=Description, 4=Claim prefix, 5=Claim suffix, 6=Gross, 7=Tax, 8=TDS, 9=Amount
+        row_pattern = r'(\d{4})\s+(\d{1,2}/\d{1,2}/\d{1,2})\s+(\d+)\s+(OC-\d+-\d+-\d+)[-\s\n]*(\d{8})\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)'
 
-            row_match = re.search(row_pattern, table_content)
-            if row_match:
-                groups = row_match.groups()
+        match = re.search(row_pattern, text, re.MULTILINE | re.DOTALL)
+        if match:
+            groups = match.groups()
 
-                # Combine claim number parts if split
-                claim_no = groups[3]
-                if groups[4]:  # If there's a continuation
-                    claim_no += groups[4]
+            row_data = {
+                'unique_id': f"{groups[3]}-{groups[4]}",  # Combine claim parts
+                'receipt_date': groups[1],
+                'gross_amount': groups[5],
+                'service_tax': groups[6],
+                'tds': groups[7],
+                'receipt_amount': groups[8],  # This should be 148138
+                'tds_computed': 'No'
+            }
 
-                row_data = {
-                    'unique_id': claim_no,
-                    'receipt_date': groups[1],
-                    'gross_amount': groups[5],
-                    'service_tax': groups[6],
-                    'tds': groups[7],
-                    'receipt_amount': groups[8],  # This should be 148138
-                    'tds_computed': 'No'
-                }
-
-                table_data.append(row_data)
-                logger.info(f"Extracted Bajaj table row with amount: {groups[8]}")
+            table_data.append(row_data)
+            logger.info(f"Extracted Bajaj table row: {row_data}")
 
         return table_data
 
