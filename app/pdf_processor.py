@@ -1452,105 +1452,75 @@ class PDFProcessor:
         elif detected_provider == "bajaj_allianz":
             logger.debug("Extracting data using Bajaj Allianz patterns")
 
-            # ── STEP 1: Try one big regex that spans both lines (prefix + suffix + date + gross + tds + net) ──
-            #    The pattern looks for:
-            #     • “OC-XX-XXXX-XXXX”  (prefix)
-            #     • some whitespace or newlines
-            #     • exactly 8 digits       (suffix)
-            #     • some whitespace
-            #     • a date in either DD-MMM-YYYY or DD/MM/YYYY format
-            #     • some whitespace
-            #     • three groups of numbers (gross, tds, net), each possibly with commas or decimals
-            #
-            two_line_pattern = re.compile(
-                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})'  # prefix
-                r'\s+(\d{8})'  # suffix
-                r'\s+(\d{2}[-/]\d{2}[-/]\d{4})'  # date in DD/MM/YYYY
-                r'\s+(\d{1,6})'  # gross (we don’t need it)
-                r'\s+(\d{1,6})'  # TDS
-                r'\s+(\d{1,6})',  # NET = receipt
+            # ── NEW: Try to match “OC-##-####-####-########” all at once ──
+            full_match = re.search(
+                r'(OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})[-\s]*(\d{8}))',
+                text,
                 re.IGNORECASE
             )
+            if full_match:
+                # full_match.group(1) is the entire ID, e.g. "OC-24-1501-4089-00000009"
+                data['unique_id'] = full_match.group(1).replace(" ", "").strip()
+                logger.info(f"Extracted full Bajaj claim ID: {data['unique_id']}")
 
-            start = text.lower().find("oc-24-1501-4089")
-            if start >= 0:
-                snippet = text[start: start + 200]  # grab 200 chars starting at “OC-24-1501-4089”
-                logger.info(f"DEBUG_SNIPPET around OC-24-1501-4089:\n{snippet!r}")
-
-            m = two_line_pattern.search(text)
-            if m:
-                # We got a match spanning both “lines”
-                prefix_part = m.group(1).replace(" ", "").strip()  # “OC-24-1501-4089”
-                suffix_part = m.group(2).strip()  # “00000009”
-                date_part = m.group(3).strip()  # “02-Jan-2025” (or “02/01/2025”)
-                # gross_amt  = m.group(4)  # 162150    (we don’t actually need it)
-                tds_part = m.group(5).replace(",", "").strip()  # “14812”
-                net_part = m.group(6).replace(",", "").strip()  # “148138”
-
-                full_id = f"{prefix_part}-{suffix_part}"
-                data['unique_id'] = full_id
-                data['receipt_amount'] = net_part
-                data['tds'] = tds_part
-                data['tds_computed'] = 'No'  # TDS was explicitly present
-                data['receipt_date'] = date_part
-
-                logger.info(f"Found split-over-two-lines Bajaj ID: {full_id}")
-                logger.debug(f"  → Extracted receipt_amount={net_part}, tds={tds_part}, date={date_part}")
             else:
-                # ── STEP 2: FALLBACK to “single-line prefix” + generic amount/date/tds patterns ──
+                # ── FALLBACK: just grab the prefix, as before ──
                 prefix_match = re.search(
                     r'OC[-\s]*(\d{2})[-\s]*(\d{4})[-\s]*(\d{4})',
                     text,
                     re.IGNORECASE
                 )
                 if prefix_match:
-                    p1, p2, p3 = prefix_match.group(1), prefix_match.group(2), prefix_match.group(3)
-                    data['unique_id'] = f"OC-{p1}-{p2}-{p3}"
-                    logger.info(f"Extracted Bajaj prefix (fallback): {data['unique_id']}")
+                    part1 = prefix_match.group(1)
+                    part2 = prefix_match.group(2)
+                    part3 = prefix_match.group(3)
+                    extracted_prefix = f"OC-{part1}-{part2}-{part3}"
+                    data['unique_id'] = extracted_prefix
+                    logger.info(f"Extracted Bajaj prefix: {data['unique_id']}")
 
-                    # Generic amount (still likely “8412.0” if two-line didn’t fire)
-                    for amt_pat in [
-                        r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                        r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                        r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                        r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                    ]:
-                        m2 = re.search(amt_pat, text, re.IGNORECASE)
-                        if m2:
-                            data['receipt_amount'] = m2.group(1).replace(",", "")
-                            logger.debug(f"Extracted Bajaj Allianz amount (fallback): {data['receipt_amount']}")
-                            break
+            # STEP 2: Extract amount, date, TDS exactly as before (unchanged).
+            # We keep the same amount‐/date‐/tds‐patterns you already had.
+            amount_patterns = [
+                r'remittance\s+amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'amount\s*\(inr\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'amount\s*:?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'Amount\s*\(INR\)\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+            for pattern in amount_patterns:
+                m = re.search(pattern, text, re.IGNORECASE)
+                if m:
+                    data['receipt_amount'] = m.group(1).replace(',', '')
+                    logger.debug(f"Extracted Bajaj Allianz amount: {data['receipt_amount']}")
+                    break
 
-                    # Generic date
-                    for date_pat in [
-                        r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',
-                        r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
-                        r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
-                        r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
-                    ]:
-                        d2 = re.search(date_pat, text, re.IGNORECASE)
-                        if d2:
-                            data['receipt_date'] = d2.group(1).strip()
-                            logger.debug(f"Extracted Bajaj Allianz date (fallback): {data['receipt_date']}")
-                            break
+            date_patterns = [
+                r'value\s+date\s*[»:]\s*(\d{2}-[A-Za-z]{3}-\d{4})',  # e.g. 02-Jan-2025
+                r'advice\s+date\s*:?\s*(\d{2}-[A-Za-z]{3}-\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+                r'value\s+date\s*:?\s*(\d{2}-\d{2}-\d{4})',
+            ]
+            for pattern in date_patterns:
+                d = re.search(pattern, text, re.IGNORECASE)
+                if d:
+                    data['receipt_date'] = d.group(1).strip()
+                    logger.debug(f"Extracted Bajaj Allianz date: {data['receipt_date']}")
+                    break
 
-                    # Generic TDS
-                    for tds_pat in [
-                        r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                        r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                        r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
-                    ]:
-                        t2 = re.search(tds_pat, text, re.IGNORECASE)
-                        if t2:
-                            data['tds'] = t2.group(1).replace(",", "")
-                            data['tds_computed'] = 'No'
-                            logger.debug(f"Extracted Bajaj Allianz TDS (fallback): {data['tds']}")
-                            break
+            tds_patterns = [
+                r'TDS\s+Amt\s+(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'tds\s+amt\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+                r'tds\s+amount\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',
+            ]
+            for pattern in tds_patterns:
+                t = re.search(pattern, text, re.IGNORECASE)
+                if t:
+                    data['tds'] = t.group(1).replace(',', '')
+                    data['tds_computed'] = 'No'
+                    logger.debug(f"Extracted Bajaj Allianz TDS: {data['tds']}")
+                    break
 
-            # ── STEP 3: Only now do we return (after trying both two-line and fallback) ──
+            # Return _prefix_ now—Excel handler will recover the final “-00000009” for us.
             return data, detected_provider
-
-
 
 
 
@@ -2952,114 +2922,118 @@ class PDFProcessor:
 
     def extract_table_data_from_bajaj(self, text):
         """
-        Extract Bajaj Allianz table rows even if the claim ID is split across two lines.
-        We look for either:
-          1) A single line containing “OC-##-####-####-########”
-          2) A line with “OC-##-####-####” followed immediately by a next line starting with 8 digits.
-        Once we have the full ID, we grab all numbers on that (one- or two-line) chunk.  The last number is the
-        net (receipt) amount; the second-to-last is the TDS.  If there’s a date on the same chunk, we grab it too.
+        Extract table data specifically from Bajaj Allianz format PDFs where data might be split across lines.
+
+        Args:
+            text (str): Extracted PDF text
+
+        Returns:
+            list: List of dictionaries containing extracted table data
         """
         table_data = []
-        lines = text.splitlines()
-        i = 0
 
-        while i < len(lines):
-            line = lines[i].strip()
+        # Look for the table pattern specific to Bajaj Allianz advices
+        table_pattern = r'(?:Appr|Ref)\s+Date\s+Description\s+Claim\s+No\s+Gross\s+(?:Amt|Amount)\s+(?:Ser\s+Tax|Service\s+Tax)\s+TDS\s+(?:Amt|Amount)\s+Amount\s+\(INR\)'
+        table_match = re.search(table_pattern, text, re.IGNORECASE)
 
-            # 1) Does this line already contain the full “OC-##-####-####-########”?
-            full_match = re.search(
-                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4}[-\s]*\d{8})',
-                line,
-                re.IGNORECASE
-            )
-            if full_match:
-                # Normalize (remove spaces)
-                full_id = full_match.group(1).replace(" ", "").strip()
+        if table_match:
+            # Extract the content after the table header
+            table_content = text[table_match.end():]
 
-                # Pull out every “number (with optional decimals)” on this line
-                all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', line)
-                if not all_numbers:
+            # Find the end of the table content
+            end_markers = ["Note:", "----", "This is a system"]
+            for marker in end_markers:
+                end_pos = table_content.find(marker)
+                if end_pos > 0:
+                    table_content = table_content[:end_pos].strip()
+                    break
+
+            # Split the content into lines
+            lines = table_content.strip().split('\n')
+
+            # Process rows by combining lines if needed
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+
+                # Skip empty lines
+                if not line:
                     i += 1
                     continue
 
-                receipt_amount = all_numbers[-1]
-                tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
+                # Check if this looks like the start of a data row (reference number)
+                if re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', line):
+                    # This is likely a row start
+                    full_row = line
 
-                # Try to find a date like “02/01/2025” or “02-Jan-2025” on the same line
-                date_match = re.search(
-                    r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
-                    line
-                )
-                receipt_date = date_match.group(1) if date_match else None
-
-                row_data = {
-                    'unique_id': full_id,
-                    'receipt_amount': receipt_amount
-                }
-                if tds_amount:
-                    row_data['tds'] = tds_amount
-                    row_data['tds_computed'] = 'No'
-                if receipt_date:
-                    row_data['receipt_date'] = receipt_date
-
-                table_data.append(row_data)
-                i += 1
-                continue
-
-            # 2) If not “full” on one line, check for a “prefix” pattern here
-            prefix_match = re.search(
-                r'(OC[-\s]*\d{2}[-\s]*\d{4}[-\s]*\d{4})',
-                line,
-                re.IGNORECASE
-            )
-            if prefix_match and (i + 1) < len(lines):
-                # Normalize prefix (remove spaces)
-                prefix = prefix_match.group(1).replace(" ", "").strip()
-
-                # Look at the next line to see if it begins with exactly 8 digits
-                next_line = lines[i + 1].strip()
-                suffix_match = re.match(r'^(\d{8})', next_line)
-                if suffix_match:
-                    suffix = suffix_match.group(1)
-                    full_id = f"{prefix}-{suffix}"
-
-                    # Combine both lines into one chunk for number-extraction
-                    combined = line + " " + next_line
-
-                    # Pull out every “number (with optional decimals)” from that combined chunk
-                    all_numbers = re.findall(r'(\d+(?:\.\d{1,2})?)', combined)
-                    if not all_numbers:
+                    # Check if the next line might be a continuation
+                    if i + 1 < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i + 1]):
+                        full_row += " " + lines[i + 1].strip()
                         i += 2
-                        continue
+                    else:
+                        i += 1
 
-                    receipt_amount = all_numbers[-1]
-                    tds_amount = all_numbers[-2] if len(all_numbers) >= 2 else None
+                    # Now extract the data using a more specific pattern
+                    # Looking for values in a specific order
+                    row_data = {}
 
-                    # Try to find a date anywhere in combined text
-                    date_match = re.search(
-                        r'(\d{2}[/-][A-Za-z]{3}[/-]\d{4}|\d{2}[/-]\d{2}[/-]\d{4})',
-                        combined
-                    )
-                    receipt_date = date_match.group(1) if date_match else None
+                    # Extract reference number and date
+                    ref_match = re.search(r'(\d{4,})\s+(\d{2}/\d{2}/\d{1,4})', full_row)
+                    if ref_match:
+                        row_data['reference'] = ref_match.group(1).strip()
+                        row_data['receipt_date'] = ref_match.group(2).strip()
 
-                    row_data = {
-                        'unique_id': full_id,
-                        'receipt_amount': receipt_amount
-                    }
-                    if tds_amount:
-                        row_data['tds'] = tds_amount
-                        row_data['tds_computed'] = 'No'
-                    if receipt_date:
-                        row_data['receipt_date'] = receipt_date
+                    # Extract description number
+                    desc_match = re.search(r'(\d{2}/\d{2}/\d{1,4})\s+(\d+)', full_row)
+                    if desc_match:
+                        row_data['description'] = desc_match.group(2).strip()
 
-                    table_data.append(row_data)
+                    # Extract claim number - CRITICAL FIX HERE
+                    claim_pattern = r'OC-\d+-\d+-\d+-\d+'  # Pattern to match entire claim number including splits
+                    claim_match = re.search(claim_pattern, full_row)
+                    if claim_match:
+                        row_data['unique_id'] = claim_match.group(0).strip()
+                    else:
+                        # Try a more flexible pattern to handle split claim numbers
+                        claim_parts = re.findall(r'OC-\d+-\d+-\d+[-\s]*(\d+)?', full_row)
+                        if claim_parts:
+                            # If we have a partial match, look for continuation in adjacent lines
+                            partial_id = re.search(r'(OC-\d+-\d+-\d+)', full_row).group(1)
 
-                    # Skip over the next line since we've consumed it
-                    i += 2
-                    continue
+                            # Check next line for remaining digits if we don't have a complete ID
+                            continuation = ""
+                            if i < len(lines) and not re.match(r'^\d{4}\s+\d{2}/\d{2}/\d', lines[i].strip()):
+                                continuation = re.search(r'^\s*(\d+)', lines[i].strip())
+                                if continuation:
+                                    continuation = continuation.group(1)
+                                    i += 1  # Advance if we consumed the next line
 
-            # Otherwise, move on
-            i += 1
+                            # Combine parts to form complete ID
+                            row_data['unique_id'] = f"{partial_id}-{continuation}" if continuation else partial_id
+
+                    # Extract amount values using positions or patterns
+                    amounts = re.findall(r'(\d+(?:\.\d+)?)', full_row)
+                    if len(amounts) >= 4:  # We need at least reference, date, description, and values
+                        idx = 3  # Start from the 4th number (after ref, date, desc)
+                        if len(amounts) > idx:
+                            row_data['gross_amount'] = amounts[idx]
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['service_tax'] = amounts[idx]
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['tds'] = amounts[idx]
+                            row_data['tds_computed'] = 'No'  # TDS is directly from document
+                            idx += 1
+                        if len(amounts) > idx:
+                            row_data['receipt_amount'] = amounts[idx]
+
+                    # Add the row data if we have the essential fields
+                    if 'unique_id' in row_data and 'receipt_amount' in row_data:
+                        table_data.append(row_data)
+                        logger.info(f"Extracted table row with claim ID: {row_data['unique_id']}")
+                else:
+                    i += 1
 
         return table_data
 
